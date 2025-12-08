@@ -8,17 +8,18 @@ from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.configs.base_config import ViewerConfig
 from water_splatting.water_splatting import WaterSplattingModelConfig
 
-NUM_STEPS = 15000
+NUM_STEPS = 50000
 # Base method configuration
 water_splatting_method = MethodSpecification(
     config=TrainerConfig(
         method_name="water-splatting",
-        steps_per_eval_image=1000,
+        steps_per_eval_image=100,
         steps_per_eval_batch=0,
         steps_per_save=2000,
         steps_per_eval_all_images=1000,
         max_num_iterations=NUM_STEPS,
         mixed_precision=False,
+        save_only_latest_checkpoint=False,
         pipeline=VanillaPipelineConfig(
             datamanager=FullImageDatamanagerConfig(
                 dataparser=NerfstudioDataParserConfig(load_3D_points=True),
@@ -66,7 +67,7 @@ water_splatting_method = MethodSpecification(
                     max_steps=NUM_STEPS,
                 ),
             },
-            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), 
+            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15),
                       "scheduler": ExponentialDecaySchedulerConfig(
                     lr_final=0.001,
                     max_steps=NUM_STEPS,
@@ -79,13 +80,20 @@ water_splatting_method = MethodSpecification(
             "medium_mlp": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
                 "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1.5e-4, max_steps=NUM_STEPS, 
+                    lr_final=1.5e-4, max_steps=NUM_STEPS,
                 ),
             },
-            "direction_encoding": {
-                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
+            # "direction_encoding": {
+            #     "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
+            #     "scheduler": ExponentialDecaySchedulerConfig(
+            #         lr_final=1.5e-4, max_steps=NUM_STEPS,
+            #     ),
+            # },
+            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
+            "attenuation_coeff": {
+                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1.5e-4, max_steps=NUM_STEPS, 
+                    lr_final=1e-4, max_steps=NUM_STEPS,
                 ),
             },
         },
@@ -147,13 +155,20 @@ water_splatting_method_big = MethodSpecification(
             "medium_mlp": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
                 "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1.5e-4, max_steps=NUM_STEPS, 
+                    lr_final=1.5e-4, max_steps=NUM_STEPS,
                 ),
             },
             "direction_encoding": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
                 "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1.5e-4, max_steps=NUM_STEPS, 
+                    lr_final=1.5e-4, max_steps=NUM_STEPS,
+                ),
+            },
+            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
+            "attenuation_coeff": {
+                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
+                    lr_final=1e-4, max_steps=NUM_STEPS,
                 ),
             },
         },

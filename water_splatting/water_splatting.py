@@ -166,6 +166,16 @@ class WaterSplattingModelConfig(ModelConfig):
     mlp_type: Literal["tcnn", "torch"] = "tcnn"
     """Type of MLP to use for medium MLP."""
 
+    # ---- Training schedules ----
+    depth_attenuation_warmup_steps: int = 2000
+    """Disable depth attenuation for the first N training steps."""
+
+    edge_loss_warmup_steps: int = 2000
+    """Linearly ramp edge_loss_weight from 0 to its configured value over this many steps."""
+
+    densify_error_warmup_steps: int = 2000
+    """Linearly anneal effective densify_error_thresh from 2× to 1× its value over this many steps."""
+
     # ------------------------------------------------------------------
     # New configuration parameters for research-based improvements
     #
@@ -175,7 +185,7 @@ class WaterSplattingModelConfig(ModelConfig):
     max_gaussians: Optional[int] = 10000000
     """Maximum allowed number of Gaussians. If the densification would exceed this, splits are skipped."""
 
-    edge_loss_weight: float = 0.0
+    edge_loss_weight: float = 0.15
     """Weight for edge‑aware loss; if >0, errors near edges are upweighted by (1 + edge_loss_weight * gradient magnitude)."""
 
     use_depth_attenuation: bool = True
@@ -183,6 +193,30 @@ class WaterSplattingModelConfig(ModelConfig):
 
     attenuation_coeff_init: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     """Initial attenuation coefficients (R,G,B) for depth‑dependent color attenuation. Only used if use_depth_attenuation=True."""
+
+    # Complexity-based / depth-guided initialization
+    complexity_init_factor: float = 0.0
+    """
+    Fraction of additional Gaussians (relative to initial count) to seed
+    at initialization in locally complex regions. 0.0 disables this path.
+    """
+
+    complexity_init_k: int = 8
+    """k for k-NN used to estimate local geometric complexity at init."""
+
+    complexity_depth_weight: float = 0.0
+    """
+    If > 0, bias complexity scores toward points that are further along
+    the scene radius (approximate depth); useful if far regions tend to
+    be under-covered.
+    """
+
+    # Steepest-direction splitting
+    use_steepest_split: bool = True
+    """
+    If True, split Gaussians along their principal axis (largest scale
+    in world space) instead of random offsets in the ellipsoid.
+    """
 
 
 class WaterSplattingModel(Model):
@@ -236,19 +270,71 @@ class WaterSplattingModel(Model):
             self.medium_mlp = nn.Linear(self.direction_encoding.get_out_dim(), 9)
             self.config.mlp_type = "torch"
 
+        # ------------------------ Gaussian initialization ------------------------
+        # Base means: SFM points if provided, otherwise random in a cube
         if self.seed_points is not None and not self.config.random_init:
-            means = torch.nn.Parameter(self.seed_points[0])  # (Location, Color)
+            base_means = self.seed_points[0]  # [N0, 3]
         else:
-            means = torch.nn.Parameter((torch.rand((self.config.num_random, 3)) - 0.5) * self.config.random_scale)
+            base_means = (
+                (torch.rand((self.config.num_random, 3)) - 0.5)
+                * self.config.random_scale
+            )
+
+        # Optionally: complexity-based / depth-guided extra seeding at initialization
+        means_tensor = base_means
+        if (
+            self.config.complexity_init_factor > 0.0
+            and means_tensor.shape[0] > self.config.complexity_init_k
+        ):
+            # k-NN distances on the base set (CPU for sklearn)
+            with torch.no_grad():
+                dists_np, _ = self.k_nearest_sklearn(
+                    means_tensor.detach().cpu(), self.config.complexity_init_k
+                )
+            dists = torch.from_numpy(dists_np).to(self.device)  # [N0, K]
+            local_scale = dists.mean(dim=-1)  # [N0]
+
+            # Complexity ~ inverse local scale (denser regions are "complex")
+            complexity = 1.0 / (local_scale + 1e-6)
+
+            # Optional depth bias: approximate depth by radius from origin
+            if self.config.complexity_depth_weight > 0.0:
+                depth = means_tensor.norm(dim=-1)  # [N0]
+                depth_norm = depth / (depth.mean() + 1e-6)
+                complexity = complexity * (
+                    1.0 + self.config.complexity_depth_weight * depth_norm
+                )
+
+            # How many extra points to seed
+            n_extra = int(self.config.complexity_init_factor * means_tensor.shape[0])
+            n_extra = max(0, min(n_extra, means_tensor.shape[0]))
+            if n_extra > 0:
+                topk_idx = torch.topk(complexity, k=n_extra, largest=True).indices  # [n_extra]
+
+                # Jitter new points around complex ones with std ~ local_scale
+                jitter_std = 0.5 * local_scale[topk_idx].unsqueeze(-1)  # [n_extra, 1]
+                noise = torch.randn_like(means_tensor[topk_idx]) * jitter_std
+                extra_means = means_tensor[topk_idx] + noise
+
+                means_tensor = torch.cat([means_tensor, extra_means], dim=0)
+
+        # Register as Parameter
+        means = torch.nn.Parameter(means_tensor)
         self.xys_grad_norm = None
         self.max_2Dsize = None
-        distances, _ = self.k_nearest_sklearn(means.data, 3)
-        distances = torch.from_numpy(distances)
-        # find the average of the three nearest neighbors for each point and use that as the scale
-        avg_dist = distances.mean(dim=-1, keepdim=True)
-        scales = torch.nn.Parameter(torch.log(avg_dist.repeat(1, 3)))
+
+        # k-NN based scale initialization on the (possibly) augmented set
+        dists_np, _ = self.k_nearest_sklearn(means.detach().cpu(), 3)
+        distances = torch.from_numpy(dists_np)  # [N, 3]
+        # Global scale initialization is identical to original code
+        scale_init = torch.log(
+            torch.clamp(torch.tensor(distances.mean()), min=1e-2)
+        )
+        scales = torch.nn.Parameter(
+            torch.ones((means.shape[0], 3)) * scale_init
+        )
         num_points = means.shape[0]
-        quats = torch.nn.Parameter(random_quat_tensor(num_points))
+        quats = random_quat_tensor(means.shape[0])
         dim_sh = num_sh_bases(self.config.sh_degree)
 
         if (
@@ -275,7 +361,7 @@ class WaterSplattingModel(Model):
             {
                 "means": means,
                 "scales": scales,
-                "quats": quats,
+                "quats": torch.nn.Parameter(quats),
                 "features_dc": features_dc,
                 "features_rest": features_rest,
                 "opacities": opacities,
@@ -517,8 +603,18 @@ class WaterSplattingModel(Model):
                 # If gaussian_error_map has been accumulated, compute average error per gaussian.
                 if self.gaussian_error_map is not None and self.gaussian_error_vis_counts is not None:
                     avg_gauss_err = self.gaussian_error_map / (self.gaussian_error_vis_counts + 1e-6)
-                    high_error = (avg_gauss_err > self.config.densify_error_thresh).squeeze()
-                    # Combine gradient and error criteria: densify only those that satisfy either criterion
+
+                    # During early training, use a looser (higher) error threshold to avoid
+                    # exploding the number of Gaussians while geometry is still coarse.
+                    eff_error_thresh = self.config.densify_error_thresh
+                    warmup_steps = self.config.densify_error_warmup_steps
+                    if warmup_steps > 0 and self.step < warmup_steps:
+                        # linearly decay from 2×densify_error_thresh to 1× over warmup_steps
+                        alpha = float(self.step) / float(warmup_steps)
+                        eff_error_thresh = self.config.densify_error_thresh * (2.0 - alpha)
+
+                    high_error = (avg_gauss_err > eff_error_thresh).squeeze()
+                    # Combine gradient- and error-based criteria
                     high_grads = high_grads | high_error
 
                 # Determine which Gaussians to split (large) or duplicate (small)
@@ -662,31 +758,93 @@ class WaterSplattingModel(Model):
 
         return culls
 
-    def split_gaussians(self, split_mask, samps):
+    def split_gaussians(self, split_mask: torch.Tensor, samps: int):
         """
-        This function splits gaussians that are too large
+        Split Gaussians that are too large.
+
+        If config.use_steepest_split is True, we split along the principal axis
+        (largest scale in world space). Otherwise we fall back to the original
+        random-direction splitting.
         """
-        n_splits = split_mask.sum().item()
-        CONSOLE.log(f"Splitting {split_mask.sum().item()/self.num_points} gaussians: {n_splits}/{self.num_points}")
-        centered_samples = torch.randn((samps * n_splits, 3), device=self.device)  # Nx3 of axis-aligned scales
-        scaled_samples = (
-            torch.exp(self.scales[split_mask].repeat(samps, 1)) * centered_samples
-        )  # how these scales are rotated
-        quats = self.quats[split_mask] / self.quats[split_mask].norm(dim=-1, keepdim=True)  # normalize them first
-        rots = quat_to_rotmat(quats.repeat(samps, 1))  # how these scales are rotated
-        rotated_samples = torch.bmm(rots, scaled_samples[..., None]).squeeze()
-        new_means = rotated_samples + self.means[split_mask].repeat(samps, 1)
-        # step 2, sample new colors
+        n_splits = int(split_mask.sum().item())
+        CONSOLE.log(
+            f"Splitting {n_splits}/{self.num_points} gaussians "
+            f"({split_mask.sum().item() / max(self.num_points, 1):.4f})"
+        )
+
+        if n_splits == 0:
+            # Return empty tensors with correct shapes for all parameters
+            out: Dict[str, torch.Tensor] = {}
+            for name, param in self.gauss_params.items():
+                out[name] = param.new_empty((0,) + param.shape[1:])
+            return out
+
+        size_fac = 1.6  # same shrink factor as original paper
+
+        if getattr(self.config, "use_steepest_split", True):
+            # ---------------- principal-axis ("steepest") splitting ----------------
+            base_means = self.means[split_mask]                         # [N, 3]
+            base_scales_exp = torch.exp(self.scales[split_mask])        # [N, 3]
+
+            # Shrink scales (original behavior) and update originals in-place
+            new_scales_exp = base_scales_exp / size_fac                 # [N, 3]
+            self.scales[split_mask] = torch.log(new_scales_exp)
+
+            # World-space principal axis = column of rotation matrix with largest scale
+            quats = self.quats[split_mask]
+            quats = quats / quats.norm(dim=-1, keepdim=True)            # [N, 4]
+            rots = quat_to_rotmat(quats)                                # [N, 3, 3]
+
+            axis_idx = torch.argmax(new_scales_exp, dim=-1)             # [N]
+            # gather the principal axis direction from rotation matrices
+            idx = axis_idx.view(-1, 1, 1).expand(-1, 3, 1)              # [N, 3, 1]
+            dir_world = torch.gather(rots, dim=2, index=idx).squeeze(-1)  # [N, 3]
+            dir_world = dir_world / (dir_world.norm(dim=-1, keepdim=True) + 1e-9)
+
+            axis_scale = new_scales_exp[
+                torch.arange(n_splits, device=self.device), axis_idx
+            ]  # [N]
+
+            # Repeat per original Gaussian samps times (same pattern as original code)
+            base_means_rep = base_means.repeat(samps, 1)                # [samps*N, 3]
+            dir_rep = dir_world.repeat(samps, 1)                         # [samps*N, 3]
+            axis_scale_rep = axis_scale.repeat(samps)                    # [samps*N]
+
+            # 1D offsets along principal axis
+            offsets_1d = torch.randn(samps * n_splits, device=self.device) * axis_scale_rep * 0.5
+            new_means = base_means_rep + offsets_1d.unsqueeze(-1) * dir_rep   # [samps*N, 3]
+
+            new_scales = torch.log(new_scales_exp).repeat(samps, 1)      # [samps*N, 3]
+            new_quats = self.quats[split_mask].repeat(samps, 1)         # [samps*N, 4]
+
+        else:
+            # ---------------- original random-direction splitting ----------------
+            centered_samples = torch.randn(
+                (samps * n_splits, 3), device=self.device
+            )  # [samps*N, 3] axis-aligned samples
+
+            scaled_samples = (
+                torch.exp(self.scales[split_mask].repeat(samps, 1)) * centered_samples
+            )  # [samps*N, 3]
+
+            quats = self.quats[split_mask]
+            quats = quats / quats.norm(dim=-1, keepdim=True)            # [N, 4]
+            rots = quat_to_rotmat(quats.repeat(samps, 1))               # [samps*N, 3, 3]
+            rotated_samples = torch.bmm(rots, scaled_samples.unsqueeze(-1)).squeeze(-1)
+
+            new_means = rotated_samples + self.means[split_mask].repeat(samps, 1)
+
+            new_scales = torch.log(torch.exp(self.scales[split_mask]) / size_fac).repeat(
+                samps, 1
+            )
+            self.scales[split_mask] = torch.log(torch.exp(self.scales[split_mask]) / size_fac)
+            new_quats = self.quats[split_mask].repeat(samps, 1)
+
+        # Features / opacities same as original code
         new_features_dc = self.features_dc[split_mask].repeat(samps, 1)
         new_features_rest = self.features_rest[split_mask].repeat(samps, 1, 1)
-        # step 3, sample new opacities
         new_opacities = self.opacities[split_mask].repeat(samps, 1)
-        # step 4, sample new scales
-        size_fac = 1.6
-        new_scales = torch.log(torch.exp(self.scales[split_mask]) / size_fac).repeat(samps, 1)
-        self.scales[split_mask] = torch.log(torch.exp(self.scales[split_mask]) / size_fac)
-        # step 5, sample new quats
-        new_quats = self.quats[split_mask].repeat(samps, 1)
+
         out = {
             "means": new_means,
             "features_dc": new_features_dc,
@@ -697,8 +855,9 @@ class WaterSplattingModel(Model):
         }
         for name, param in self.gauss_params.items():
             if name not in out:
-                out[name] = param[split_mask].repeat(samps, 1)
+                out[name] = param[split_mask].repeat(samps, *([1] * (param.dim() - 1)))
         return out
+
 
     def dup_gaussians(self, dup_mask):
         """
@@ -923,21 +1082,30 @@ class WaterSplattingModel(Model):
             self.xys.retain_grad()
 
         if self.config.sh_degree > 0:
-            viewdirs = means_crop.detach() - camera.camera_to_worlds.detach()[..., :3, 3]  # (N, 3)
+            # Camera position in world coordinates for this (single) view
+            cam_pos = camera.camera_to_worlds[0, :3, 3].detach()  # (3,)
+            viewdirs = means_crop.detach() - cam_pos[None, :]     # (N, 3)
             viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
             n = min(self.step // self.config.sh_degree_interval, self.config.sh_degree)
             rgbs = spherical_harmonics(n, viewdirs, colors_crop)
             rgbs = torch.clamp(rgbs + 0.5, min=0.0)  # type: ignore
         else:
             rgbs = torch.sigmoid(colors_crop[:, 0, :])
-        # Apply depth‑dependent color attenuation to object colors (if enabled)
-        if self.config.use_depth_attenuation and self.attenuation_coeff is not None:
+
+        # Depth-attenuation warmup:
+        # - during training, disable attenuation for the first depth_attenuation_warmup_steps
+        # - during eval (self.training == False), always apply attenuation
+        apply_depth_attn = (
+            self.config.use_depth_attenuation
+            and self.attenuation_coeff is not None
+            and (not self.training or self.step >= self.config.depth_attenuation_warmup_steps)
+        )
+
+        if apply_depth_attn:
             # Ensure positive attenuation coefficients via softplus
             coeff = torch.nn.functional.softplus(self.attenuation_coeff).to(rgbs)
-            # depths is per‑Gaussian depth in camera space (already computed by project_gaussians)
             if depths is not None:
-                # Broadcast depths (N,) and coeff (3,) to (N,3)
-                atten = torch.exp(-depths.unsqueeze(-1) * coeff.unsqueeze(0))
+                atten = torch.exp(-depths.unsqueeze(-1) * coeff.unsqueeze(0))  # (N,3)
                 rgbs = rgbs * atten
 
         assert (num_tiles_hit > 0).any()  # type: ignore
@@ -1067,20 +1235,35 @@ class WaterSplattingModel(Model):
 
         # Edge-aware weighting: upweight error near edges in GT image
         if self.config.edge_loss_weight > 0:
-            # Compute gradient magnitude of GT image (grayscale)
-            # Convert GT image to grayscale by averaging channels
-            gray = gt_img.mean(dim=-1, keepdim=True)
-            # Create Sobel kernels for x and y gradients
-            sobel_x = torch.tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]], dtype=torch.float32, device=gt_img.device).view(1, 1, 3, 3)
-            sobel_y = torch.tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=torch.float32, device=gt_img.device).view(1, 1, 3, 3)
-            # Normalize for differentiability
-            gray = gray.permute(2, 0, 1).unsqueeze(0)  # (1,1,H,W)
-            grad_x = torch.nn.functional.conv2d(gray, sobel_x, padding=1)
-            grad_y = torch.nn.functional.conv2d(gray, sobel_y, padding=1)
-            grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2).squeeze(0).permute(1, 2, 0)
-            weight_map = 1.0 + self.config.edge_loss_weight * grad_mag
-            # Ensure broadcasting: weight_map shape (H,W,1); per_pixel_error shape (H,W,C)
-            recon_loss = (per_pixel_error * weight_map).mean()
+            # Use a small weight, ramped up over edge_loss_warmup_steps, and clamp to <= 0.3.
+            effective_edge_weight = self.config.edge_loss_weight
+            if self.training and self.config.edge_loss_warmup_steps > 0:
+                t = min(1.0, float(self.step) / float(self.config.edge_loss_warmup_steps))
+                effective_edge_weight = effective_edge_weight * t
+            # Clamp to avoid over-emphasising noisy underwater boundaries
+            effective_edge_weight = min(effective_edge_weight, 0.3)
+
+            if effective_edge_weight > 0.0:
+                # Compute gradient magnitude of GT image (grayscale)
+                gray = gt_img.mean(dim=-1, keepdim=True)
+                sobel_x = torch.tensor(
+                    [[1, 0, -1], [2, 0, -2], [1, 0, -1]],
+                    dtype=torch.float32,
+                    device=gt_img.device,
+                ).view(1, 1, 3, 3)
+                sobel_y = torch.tensor(
+                    [[1, 2, 1], [0, 0, 0], [-1, -2, -1]],
+                    dtype=torch.float32,
+                    device=gt_img.device,
+                ).view(1, 1, 3, 3)
+
+                gray = gray.permute(2, 0, 1).unsqueeze(0)  # (1,1,H,W)
+                grad_x = torch.nn.functional.conv2d(gray, sobel_x, padding=1)
+                grad_y = torch.nn.functional.conv2d(gray, sobel_y, padding=1)
+                grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2).squeeze(0).permute(1, 2, 0)
+
+                weight_map = 1.0 + effective_edge_weight * grad_mag
+                recon_loss = (per_pixel_error * weight_map).mean()
 
         # SSIM component
         if self.config.ssim_loss != "ssim":

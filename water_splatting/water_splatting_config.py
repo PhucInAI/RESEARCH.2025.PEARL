@@ -8,7 +8,7 @@ from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.configs.base_config import ViewerConfig
 from water_splatting.water_splatting import WaterSplattingModelConfig
 
-NUM_STEPS = 50000
+NUM_STEPS = 30000
 # Base method configuration
 water_splatting_method = MethodSpecification(
     config=TrainerConfig(

@@ -7,7 +7,7 @@ from jaxtyping import Float
 from torch import Tensor
 from torch.autograd import Function
 
-import water_splatting.cuda as _C
+import pearl.cuda as _C
 
 
 def project_gaussians(

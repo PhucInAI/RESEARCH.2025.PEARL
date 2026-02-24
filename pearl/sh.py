@@ -1,6 +1,6 @@
 """Python bindings for SH"""
 
-import water_splatting.cuda as _C
+import pearl.cuda as _C
 
 from jaxtyping import Float
 from torch import Tensor

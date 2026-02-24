@@ -7,7 +7,8 @@ import sys
 from setuptools import find_packages, setup
 
 __version__ = None
-exec(open("water_splatting/version.py", "r").read())
+# Version is stored in the package for single-source-of-truth.
+exec(open("pearl/version.py", "r").read())
 
 BUILD_NO_CUDA = os.getenv("BUILD_NO_CUDA", "0") == "1"
 WITH_SYMBOLS = os.getenv("WITH_SYMBOLS", "0") == "1"
@@ -25,7 +26,7 @@ def get_extensions():
     from torch.__config__ import parallel_info
     from torch.utils.cpp_extension import CUDAExtension
 
-    extensions_dir = osp.join("water_splatting", "cuda", "csrc")
+    extensions_dir = osp.join("pearl", "cuda", "csrc")
     sources = glob.glob(osp.join(extensions_dir, "*.cu")) + glob.glob(
         osp.join(extensions_dir, "*.cpp")
     )
@@ -36,7 +37,7 @@ def get_extensions():
     define_macros = []
 
     if sys.platform == "win32":
-        define_macros += [("water_splatting_EXPORTS", None)]
+        define_macros += [("pearl_EXPORTS", None)]
 
     extra_compile_args = {"cxx": ["-O3"]}
     if not os.name == "nt":  # Not on Windows:
@@ -68,8 +69,6 @@ def get_extensions():
     if LINE_INFO:
         nvcc_flags += ["-lineinfo"]
     if torch.version.hip:
-        # USE_ROCM was added to later versions of PyTorch.
-        # Define here to support older PyTorch versions as well:
         define_macros += [("USE_ROCM", None)]
         undef_macros += ["__HIP_NO_HALF_CONVERSIONS__"]
     else:
@@ -79,7 +78,7 @@ def get_extensions():
         extra_compile_args["nvcc"] += ["-DWIN32_LEAN_AND_MEAN"]
 
     extension = CUDAExtension(
-        f"water_splatting.csrc",
+        "pearl.csrc",
         sources,
         include_dirs=[osp.join(extensions_dir, "third_party", "glm")],
         define_macros=define_macros,
@@ -92,12 +91,12 @@ def get_extensions():
 
 
 setup(
-    name="water_splatting",
+    name="pearl",
     version=__version__,
-    description="Python package for combining 3DGS with volume rendering to enable water/fog modeling",
+    description="PEARL: Photometric-Error and Attenuation-Regularized Learning for underwater Gaussian splatting",
     keywords="3dgs, neural scene reconstruction, cuda, volume rendering",
-    # python_requires=">=3.7",
     install_requires=[
+        "nerfstudio>=0.3.4",
         "jaxtyping",
         "rich>=12",
         "torch",
@@ -106,6 +105,5 @@ setup(
     ext_modules=get_extensions() if not BUILD_NO_CUDA else [],
     cmdclass={"build_ext": get_ext()} if not BUILD_NO_CUDA else {},
     packages=find_packages(),
-    # https://github.com/pypa/setuptools/issues/1461#issuecomment-954725244
     include_package_data=True,
 )

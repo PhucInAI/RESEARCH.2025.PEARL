@@ -6,14 +6,14 @@ from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataPars
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.configs.base_config import ViewerConfig
-from water_splatting.water_splatting import WaterSplattingModelConfig
+from pearl.pearl import PearlModelConfig
 
 NUM_STEPS = 30000
 # Base method configuration
-water_splatting_method = MethodSpecification(
+pearl_method = MethodSpecification(
     config=TrainerConfig(
-        method_name="water-splatting",
-        steps_per_eval_image=100,
+        method_name="pearl",
+        steps_per_eval_image=1000,
         steps_per_eval_batch=0,
         steps_per_save=2000,
         steps_per_eval_all_images=1000,
@@ -24,7 +24,7 @@ water_splatting_method = MethodSpecification(
             datamanager=FullImageDatamanagerConfig(
                 dataparser=NerfstudioDataParserConfig(load_3D_points=True),
             ),
-            model=WaterSplattingModelConfig(
+            model=PearlModelConfig(
                 num_steps=NUM_STEPS,
                 main_loss="reg_l1",
                 ssim_loss="reg_ssim",
@@ -83,13 +83,7 @@ water_splatting_method = MethodSpecification(
                     lr_final=1.5e-4, max_steps=NUM_STEPS,
                 ),
             },
-            # "direction_encoding": {
-            #     "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
-            #     "scheduler": ExponentialDecaySchedulerConfig(
-            #         lr_final=1.5e-4, max_steps=NUM_STEPS,
-            #     ),
-            # },
-            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
+            #            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
             "attenuation_coeff": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": ExponentialDecaySchedulerConfig(
@@ -100,12 +94,12 @@ water_splatting_method = MethodSpecification(
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
         vis="viewer",
     ),
-    description="Water-Splatting for underwater scenes.",
+    description="PEARL (Photometric-Error and Attenuation-Regularized Learning) for underwater scenes.",
 )
 
-water_splatting_method_big = MethodSpecification(
+pearl_method_big = MethodSpecification(
     config=TrainerConfig(
-        method_name="water-splatting-big",
+        method_name="pearl-big",
         steps_per_eval_image=100,
         steps_per_eval_batch=0,
         steps_per_save=2000,
@@ -116,7 +110,7 @@ water_splatting_method_big = MethodSpecification(
             datamanager=FullImageDatamanagerConfig(
                 dataparser=NerfstudioDataParserConfig(load_3D_points=True),
             ),
-            model=WaterSplattingModelConfig(
+            model=PearlModelConfig(
                 num_steps=NUM_STEPS,
                 continue_cull_post_densification=False,
             ),
@@ -157,14 +151,7 @@ water_splatting_method_big = MethodSpecification(
                 "scheduler": ExponentialDecaySchedulerConfig(
                     lr_final=1.5e-4, max_steps=NUM_STEPS,
                 ),
-            },
-            "direction_encoding": {
-                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
-                "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=1.5e-4, max_steps=NUM_STEPS,
-                ),
-            },
-            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
+            },            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
             "attenuation_coeff": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": ExponentialDecaySchedulerConfig(
@@ -175,5 +162,5 @@ water_splatting_method_big = MethodSpecification(
         viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
         vis="viewer",
     ),
-    description="Water-Splatting big for underwater scenes.",
+    description="PEARL (big) for underwater scenes.",
 )

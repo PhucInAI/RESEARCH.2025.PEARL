@@ -1,5 +1,5 @@
-conda create --name 2025_CoralReef_3D -y python=3.12
-conda activate 2025_CoralReef_3D
+conda create --name pearl -y python=3.12
+conda activate pearl
 python -m pip install --upgrade pip
 
 # python 2.9

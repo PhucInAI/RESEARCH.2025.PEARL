@@ -26,10 +26,10 @@ from typing import Dict, List, Optional, Tuple, Type, Union
 import numpy as np
 import torch
 import torch.nn as nn
-from water_splatting._torch_impl import quat_to_rotmat
-from water_splatting.project_gaussians import project_gaussians
-from water_splatting.rasterize import rasterize_gaussians
-from water_splatting.sh import num_sh_bases, spherical_harmonics
+from ._torch_impl import quat_to_rotmat
+from .project_gaussians import project_gaussians
+from .rasterize import rasterize_gaussians
+from .sh import num_sh_bases, spherical_harmonics
 from pytorch_msssim import SSIM
 from torch.nn import Parameter
 from typing_extensions import Literal
@@ -83,10 +83,10 @@ def SH2RGB(sh):
 
 
 @dataclass
-class WaterSplattingModelConfig(ModelConfig):
-    """Water Splatting Model Config"""
+class PearlModelConfig(ModelConfig):
+    """PEARL model config."""
 
-    _target: Type = field(default_factory=lambda: WaterSplattingModel)
+    _target: Type = field(default_factory=lambda: PearlModel)
     num_steps: int = 15000
     """Number of steps to train the model"""
     warmup_length: int = 500
@@ -166,6 +166,25 @@ class WaterSplattingModelConfig(ModelConfig):
     mlp_type: Literal["tcnn", "torch"] = "tcnn"
     """Type of MLP to use for medium MLP."""
 
+    # ------------------------------------------------------------------
+    # PEARL modules (independent toggles)
+    # ------------------------------------------------------------------
+
+    enable_error_densification: bool = True
+    """Module-1: use per-Gaussian photometric error (from image residuals) to guide densification."""
+
+    enable_budget_aware_split: bool = True
+    """Module-2: enable budget-aware densification (max_gaussians cap) and optional steepest-direction splitting."""
+
+    enable_complexity_init: bool = True
+    """Module-3: enable complexity-based / depth-guided extra Gaussian seeding at initialization."""
+
+    enable_edge_loss: bool = True
+    """Module-4: enable edge-aware image loss weighting (edge-preserving supervision)."""
+
+    enable_depth_attenuation: bool = True
+    """Module-5: enable depth-dependent color attenuation on object colors (RGB Beer-Lambert style)."""
+
     # ---- Training schedules ----
     depth_attenuation_warmup_steps: int = 2000
     """Disable depth attenuation for the first N training steps."""
@@ -219,13 +238,13 @@ class WaterSplattingModelConfig(ModelConfig):
     """
 
 
-class WaterSplattingModel(Model):
+class PearlModel(Model):
     """
     Args:
-        config: Water Splatting configuration to instantiate model
+        config: PEARL configuration to instantiate model
     """
 
-    config: WaterSplattingModelConfig
+    config: PearlModelConfig
 
     def __init__(
         self,
@@ -283,7 +302,8 @@ class WaterSplattingModel(Model):
         # Optionally: complexity-based / depth-guided extra seeding at initialization
         means_tensor = base_means
         if (
-            self.config.complexity_init_factor > 0.0
+            self.config.enable_complexity_init
+            and self.config.complexity_init_factor > 0.0
             and means_tensor.shape[0] > self.config.complexity_init_k
         ):
             # k-NN distances on the base set (CPU for sklearn)
@@ -367,17 +387,15 @@ class WaterSplattingModel(Model):
                 "opacities": opacities,
             }
         )
-
-        # Initialize depth attenuation coefficients if requested
-        if self.config.use_depth_attenuation:
-            # Initialize attenuation coefficients for R,G,B channels. They can be learned.
-            # Use non-negative values via softplus later.
-            init_coeffs = torch.tensor(
-                self.config.attenuation_coeff_init, dtype=torch.float32
-            )
-            self.attenuation_coeff = torch.nn.Parameter(init_coeffs)
-        else:
-            self.attenuation_coeff = None
+        # Initialize depth attenuation coefficients (always created to keep optimizer groups stable).
+        # If depth attenuation is disabled (Module-5 off), we do not apply it in rendering.
+        init_coeffs = torch.tensor(
+            self.config.attenuation_coeff_init, dtype=torch.float32
+        )
+        # Always register attenuation_coeff as a Parameter so the optimizer group is never empty.
+        # When depth attenuation is disabled (Module-5 off), this parameter is simply unused in rendering
+        # and will therefore receive no gradients.
+        self.attenuation_coeff = torch.nn.Parameter(init_coeffs)
 
         # metrics
         from torchmetrics.image import PeakSignalNoiseRatio
@@ -599,9 +617,9 @@ class WaterSplattingModel(Model):
                 high_grads = (avg_grad_norm > self.config.densify_grad_thresh).squeeze()
 
                 # ------------------------------------------------------------------
-                # Error-map driven densification
+                # Error-map driven densification (Module-1)
                 # If gaussian_error_map has been accumulated, compute average error per gaussian.
-                if self.gaussian_error_map is not None and self.gaussian_error_vis_counts is not None:
+                if self.config.enable_error_densification and self.gaussian_error_map is not None and self.gaussian_error_vis_counts is not None:
                     avg_gauss_err = self.gaussian_error_map / (self.gaussian_error_vis_counts + 1e-6)
 
                     # During early training, use a looser (higher) error threshold to avoid
@@ -626,12 +644,12 @@ class WaterSplattingModel(Model):
                 dups = (self.scales.exp().max(dim=-1).values <= self.config.densify_size_thresh).squeeze()
                 dups &= high_grads
 
-                # If max_gaussians is specified, cap the number of new Gaussians
+                # If max_gaussians is specified, cap the number of new Gaussians (Module-2)
                 num_existing = self.num_points
                 nsamps = self.config.n_split_samples
                 # predicted number of new gaussians
                 num_new = nsamps * splits.sum().item() + dups.sum().item()
-                if self.config.max_gaussians is not None:
+                if self.config.enable_budget_aware_split and self.config.max_gaussians is not None:
                     max_allowed_new = max(0, self.config.max_gaussians - num_existing)
                     if num_new > max_allowed_new:
                         # If exceeding, reduce splits/dups proportionally: skip densification this round
@@ -720,8 +738,9 @@ class WaterSplattingModel(Model):
             self.depths_accum = None
             self.max_2Dsize = None
             # Reset accumulated photometric error maps after densification to avoid mixing across topologies
-            self.gaussian_error_map = None
-            self.gaussian_error_vis_counts = None
+            if self.config.enable_error_densification:
+                self.gaussian_error_map = None
+                self.gaussian_error_vis_counts = None
 
     def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None):
         """
@@ -762,7 +781,7 @@ class WaterSplattingModel(Model):
         """
         Split Gaussians that are too large.
 
-        If config.use_steepest_split is True, we split along the principal axis
+        If Module-2 is enabled and config.use_steepest_split is True, we split along the principal axis
         (largest scale in world space). Otherwise we fall back to the original
         random-direction splitting.
         """
@@ -781,7 +800,7 @@ class WaterSplattingModel(Model):
 
         size_fac = 1.6  # same shrink factor as original paper
 
-        if getattr(self.config, "use_steepest_split", True):
+        if bool(self.config.enable_budget_aware_split) and getattr(self.config, "use_steepest_split", True):
             # ---------------- principal-axis ("steepest") splitting ----------------
             base_means = self.means[split_mask]                         # [N, 3]
             base_scales_exp = torch.exp(self.scales[split_mask])        # [N, 3]
@@ -904,20 +923,23 @@ class WaterSplattingModel(Model):
         }
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        """Obtain the parameter groups for the optimizers
-
-        Returns:
-            Mapping of different parameter groups
-        """
+        """Obtain the parameter groups for the optimizers."""
         gps = self.get_gaussian_param_groups()
         gps["medium_mlp"] = list(self.medium_mlp.parameters())
-        # gps["direction_encoding"] = list(self.direction_encoding.parameters())
-        # Include attenuation coefficients in optimizer if using depth attenuation
+
+        # SH direction encoding has no trainable parameters in the tcnn implementation; do not register an optimizer group.
+
+        # Always expose attenuation_coeff as a group; when Module-5 is disabled it is unused and thus gets no grads.
         gps["attenuation_coeff"] = [self.attenuation_coeff]
-        for name, params in gps.items():
-            print(f"[DEBUG] group '{name}': {len(params)} tensors, "
-                f"{sum(p.numel() for p in params)} parameters")
+
+        # Drop any empty groups defensively (prevents torch optimizer errors).
+        gps = {
+            k: v
+            for k, v in gps.items()
+            if v is not None and len(v) > 0 and all(p is not None for p in v)
+        }
         return gps
+
 
     def _get_downscale_factor(self):
         if self.training:
@@ -988,32 +1010,72 @@ class WaterSplattingModel(Model):
         directions = directions / norms
         directions = directions @ R.T
 
-        directions_flat = directions.view(-1, 3)
-        directions_encoded = self.direction_encoding(directions_flat)
+        # directions_flat = directions.view(-1, 3)
+        # directions_encoded = self.direction_encoding(directions_flat)
+        # outputs_shape = directions.shape[:-1]
+
+        # # Medium MLP forward pass
+        # if self.config.mlp_type == "tcnn":
+        #     medium_base_out = self.medium_mlp(directions_encoded)
+        # else:
+        #     medium_base_out = self.medium_mlp(directions_encoded.float())
+
+        # # different activations for different outputs
+        # medium_rgb = (
+        #     self.colour_activation(medium_base_out[..., :3])
+        #     .view(*outputs_shape, -1)
+        #     .to(directions)
+        # )
+        # medium_bs = (
+        #     self.sigma_activation(medium_base_out[..., 3:6] + self.medium_density_bias)
+        #     .view(*outputs_shape, -1)
+        #     .to(directions)
+        # )
+        # medium_attn = (
+        #     self.sigma_activation(medium_base_out[..., 6:] + self.medium_density_bias)
+        #     .view(*outputs_shape, -1)
+        #     .to(directions)
+        # )
+
         outputs_shape = directions.shape[:-1]
+        flat = directions.reshape(-1, 3)
+        N = flat.shape[0]
+        chunk = int(getattr(self.config, "medium_chunk_size", 65536))
 
-        # Medium MLP forward pass
-        if self.config.mlp_type == "tcnn":
-            medium_base_out = self.medium_mlp(directions_encoded)
-        else:
-            medium_base_out = self.medium_mlp(directions_encoded.float())
+        use_amp = (
+            (not self.training)
+            and bool(getattr(self.config, "eval_use_autocast", True))
+            and flat.is_cuda
+        )
 
-        # different activations for different outputs
-        medium_rgb = (
-            self.colour_activation(medium_base_out[..., :3])
-            .view(*outputs_shape, -1)
-            .to(directions)
-        )
-        medium_bs = (
-            self.sigma_activation(medium_base_out[..., 3:6] + self.medium_density_bias)
-            .view(*outputs_shape, -1)
-            .to(directions)
-        )
-        medium_attn = (
-            self.sigma_activation(medium_base_out[..., 6:] + self.medium_density_bias)
-            .view(*outputs_shape, -1)
-            .to(directions)
-        )
+        # Store in fp32 to keep downstream kernels/ops safe; peak is reduced by chunking.
+        medium_rgb_flat  = torch.empty((N, 3), device=self.device, dtype=torch.float32)
+        medium_bs_flat   = torch.empty((N, 3), device=self.device, dtype=torch.float32)
+        medium_attn_flat = torch.empty((N, 3), device=self.device, dtype=torch.float32)
+
+        amp_ctx = torch.cuda.amp.autocast(enabled=use_amp)
+        with amp_ctx:
+            for s in range(0, N, chunk):
+                e = min(N, s + chunk)
+                enc = self.direction_encoding(flat[s:e])
+
+                if self.config.mlp_type == "tcnn":
+                    base = self.medium_mlp(enc)
+                else:
+                    base = self.medium_mlp(enc.float())
+
+                rgb  = self.colour_activation(base[..., :3])
+                bs   = self.sigma_activation(base[..., 3:6] + self.medium_density_bias)
+                attn = self.sigma_activation(base[..., 6:] + self.medium_density_bias)
+
+                medium_rgb_flat[s:e]  = rgb.float()
+                medium_bs_flat[s:e]   = bs.float()
+                medium_attn_flat[s:e] = attn.float()
+
+        medium_rgb  = medium_rgb_flat.view(*outputs_shape, 3).to(directions)
+        medium_bs   = medium_bs_flat.view(*outputs_shape, 3).to(directions)
+        medium_attn = medium_attn_flat.view(*outputs_shape, 3).to(directions)
+
         if self.config.zero_medium:
             medium_rgb = torch.zeros_like(medium_rgb)
             medium_bs = torch.zeros_like(medium_bs)
@@ -1096,7 +1158,8 @@ class WaterSplattingModel(Model):
         # - during training, disable attenuation for the first depth_attenuation_warmup_steps
         # - during eval (self.training == False), always apply attenuation
         apply_depth_attn = (
-            self.config.use_depth_attenuation
+            self.config.enable_depth_attenuation
+            and self.config.use_depth_attenuation
             and self.attenuation_coeff is not None
             and (not self.training or self.step >= self.config.depth_attenuation_warmup_steps)
         )
@@ -1211,7 +1274,7 @@ class WaterSplattingModel(Model):
 
         # Save last predicted and GT images for photometric error-based densification
         # We detach here to avoid storing computation graph
-        if self.training:
+        if self.training and self.config.enable_error_densification:
             self.last_pred_image = pred_img.detach()
             self.last_gt_image = gt_img.detach()
 
@@ -1234,7 +1297,7 @@ class WaterSplattingModel(Model):
             recon_loss = per_pixel_error.mean()
 
         # Edge-aware weighting: upweight error near edges in GT image
-        if self.config.edge_loss_weight > 0:
+        if self.config.enable_edge_loss and self.config.edge_loss_weight > 0:
             # Use a small weight, ramped up over edge_loss_warmup_steps, and clamp to <= 0.3.
             effective_edge_weight = self.config.edge_loss_weight
             if self.training and self.config.edge_loss_warmup_steps > 0:
@@ -1281,7 +1344,7 @@ class WaterSplattingModel(Model):
         # ----------------------------------------------------------------------
         # Photometric error map accumulation for error-driven densification
         # Only accumulate during training when last_pred_image and last_gt_image are available
-        if self.training:
+        if self.training and self.config.enable_error_densification:
             try:
                 # Compute per-pixel absolute error (averaged over channels)
                 err_img = torch.abs(self.last_pred_image - self.last_gt_image).mean(dim=-1)  # (H,W)
@@ -1349,15 +1412,40 @@ class WaterSplattingModel(Model):
         predicted_rgb = outputs["pred_image"]
         predicted_rgb = torch.clamp(predicted_rgb, 0.0, 1.0)
 
-        d = self._get_downscale_factor()
-        if d > 1:
-            # torchvision can be slow to import, so we do it lazily.
-            import torchvision.transforms.functional as TF
+        # d = self._get_downscale_factor()
+        # if d > 1:
+        #     # torchvision can be slow to import, so we do it lazily.
+        #     import torchvision.transforms.functional as TF
 
-            newsize = [batch["image"].shape[0] // d, batch["image"].shape[1] // d]
-            predicted_rgb = TF.resize(predicted_rgb.permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
-        else:
-            predicted_rgb = predicted_rgb
+        #     newsize = [batch["image"].shape[0] // d, batch["image"].shape[1] // d]
+        #     predicted_rgb = TF.resize(predicted_rgb.permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
+        # else:
+        #     predicted_rgb = predicted_rgb
+        # --- Robust eval resizing ---
+        # GT and rendered images must have identical H,W for TorchMetrics (PSNR/SSIM/LPIPS).
+        # Some pipelines may provide downscaled GT images but full-res cameras.
+        if predicted_rgb.shape[0] != gt_rgb.shape[0] or predicted_rgb.shape[1] != gt_rgb.shape[1]:
+            import torchvision.transforms.functional as TF
+            H, W = gt_rgb.shape[0], gt_rgb.shape[1]
+            predicted_rgb = TF.resize(
+                predicted_rgb.permute(2, 0, 1), [H, W], antialias=True
+            ).permute(1, 2, 0)
+
+            # Also resize visualization outputs to keep logging consistent.
+            def _resize_hw(x: torch.Tensor) -> torch.Tensor:
+                if not torch.is_tensor(x):
+                    return x
+                if x.ndim == 3 and (x.shape[0] != H or x.shape[1] != W):
+                    return TF.resize(x.permute(2, 0, 1), [H, W], antialias=True).permute(1, 2, 0)
+                if x.ndim == 2 and (x.shape[0] != H or x.shape[1] != W):
+                    return TF.resize(x[None, ...], [H, W], antialias=True)[0]
+                return x
+
+            outputs["rgb_medium"] = _resize_hw(outputs["rgb_medium"])
+            outputs["rgb_object"] = _resize_hw(outputs["rgb_object"])
+            outputs["depth"]      = _resize_hw(outputs["depth"])
+            outputs["rgb"]        = _resize_hw(outputs["rgb"])
+            outputs["rgb_clear"]  = _resize_hw(outputs["rgb_clear"])
 
         output_gt_rgb = gt_rgb.cpu()
 
@@ -1374,4 +1462,12 @@ class WaterSplattingModel(Model):
         metrics_dict["lpips"] = float(lpips)
 
         images_dict = {"gt": output_gt_rgb, "rgb_medium": outputs["rgb_medium"], "rgb_object": outputs["rgb_object"], "depth": outputs["depth"], "rgb": outputs["rgb"], "rgb_clear": outputs["rgb_clear"]}
+        # images_dict = {
+        #     "gt": output_gt_rgb,
+        #     "rgb_medium": outputs["rgb_medium"].detach().cpu(),
+        #     "rgb_object": outputs["rgb_object"].detach().cpu(),
+        #     "depth": outputs["depth"].detach().cpu(),
+        #     "rgb": outputs["rgb"].detach().cpu(),
+        #     "rgb_clear": outputs["rgb_clear"].detach().cpu(),
+        # }
         return metrics_dict, images_dict

@@ -6,7 +6,7 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
-import water_splatting.cuda as _C
+import pearl.cuda as _C
 
 
 def map_gaussian_to_intersects(

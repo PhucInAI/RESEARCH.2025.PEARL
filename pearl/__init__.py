@@ -1,9 +1,10 @@
 from typing import Any
 import torch
+
 from .project_gaussians import project_gaussians
 from .rasterize import rasterize_gaussians
 from ._torch_impl import project_gaussians_forward, rasterize_gaussians_forward
-from .water_splatting import WaterSplattingModel
+from .pearl import PearlModel
 from .utils import (
     map_gaussian_to_intersects,
     bin_and_sort_gaussians,
@@ -23,7 +24,7 @@ __all__ = [
     "spherical_harmonics",
     "project_gaussians_forward",
     "rasterize_gaussians_forward",
-    "WaterSplattingModel",
+    "PearlModel",
     # utils
     "bin_and_sort_gaussians",
     "compute_cumulative_intersects",
@@ -42,9 +43,8 @@ __all__ = [
     "NDRasterizeGaussians",
 ]
 
-# Define these for backwards compatibility
 
-
+# Backwards-compat wrappers (kept verbatim)
 class MapGaussiansToIntersects(torch.autograd.Function):
     @staticmethod
     def forward(ctx, *args, **kwargs):

@@ -29,6 +29,7 @@ import torch.nn as nn
 from ._torch_impl import quat_to_rotmat
 from .project_gaussians import project_gaussians
 from .rasterize import rasterize_gaussians
+from .utils import bin_and_sort_gaussians, compute_cumulative_intersects
 from .sh import num_sh_bases, spherical_harmonics
 from pytorch_msssim import SSIM
 from torch.nn import Parameter
@@ -97,11 +98,11 @@ class PearlModelConfig(ModelConfig):
     """training starts at 1/d resolution, every n steps this is doubled"""
     background_color: Literal["random", "black", "white"] = "black"
     """Whether to randomize the background color."""
-    num_downscales: int = 2
+    num_downscales: int = 1
     """at the beginning, resolution is 1/2^d, where d is this number"""
-    cull_alpha_thresh: float = 0.5
+    cull_alpha_thresh: float = 0.005
     """threshold of opacity for culling gaussians. One can set it to a lower value (e.g. 0.005) for higher quality."""
-    cull_alpha_thresh_post: float = 0.1
+    cull_alpha_thresh_post: float = 0.005
     """threshold of opacity for post culling gaussians"""
     reset_alpha_thresh: float = 0.5
     """threshold of opacity for resetting alpha"""
@@ -115,7 +116,7 @@ class PearlModelConfig(ModelConfig):
     """Every this many refinement steps, reset the alpha"""
     abs_grad_densification: bool = True
     """If True, use absolute gradient for densification"""
-    densify_grad_thresh: float = 0.0008
+    densify_grad_thresh: float = 0.0004
     """threshold of positional gradient norm for densifying gaussians (0.0004, 0.0008)"""
     densify_size_thresh: float = 0.001
     """below this size, gaussians are *duplicated*, otherwise split"""
@@ -137,7 +138,7 @@ class PearlModelConfig(ModelConfig):
     """Number of gaussians to initialize if random init is used"""
     random_scale: float = 10.
     "Size of the cube to initialize random gaussians within"
-    ssim_lambda: float = 0.2
+    ssim_lambda: float = 0.25
     """weight of ssim loss"""
     main_loss: Literal["l1", "reg_l1", "reg_l2"] = "reg_l1"
     """main loss to use"""
@@ -157,9 +158,9 @@ class PearlModelConfig(ModelConfig):
     However, PLY exported with antialiased rasterize mode is not compatible with classic mode. Thus many web viewers that
     were implemented for classic mode can not render antialiased mode PLY properly without modifications.
     """
-    num_layers_medium: int = 2
+    num_layers_medium: int = 3
     """Number of hidden layers for medium MLP."""
-    hidden_dim_medium: int = 128
+    hidden_dim_medium: int = 256
     """Dimension of hidden layers for medium MLP."""
     medium_density_bias: float = 0.0
     """Bias for medium density (sigma_bs and sigma_attn)."""
@@ -198,13 +199,13 @@ class PearlModelConfig(ModelConfig):
     # ------------------------------------------------------------------
     # New configuration parameters for research-based improvements
     #
-    densify_error_thresh: float = 0.0025
+    densify_error_thresh: float = 0.0020
     """Threshold on per‑Gaussian photometric error for densification. Error above this triggers splits/dups."""
 
-    max_gaussians: Optional[int] = 10000000
-    """Maximum allowed number of Gaussians. If the densification would exceed this, splits are skipped."""
+    max_gaussians: Optional[int] = 1000000
+    """Maximum allowed number of Gaussians N_max. Density control projects split/dup operations to satisfy the cap (Eq. 15) and prunes by utility if still above the cap (Eq. 17)."""
 
-    edge_loss_weight: float = 0.15
+    edge_loss_weight: float = 0.05
     """Weight for edge‑aware loss; if >0, errors near edges are upweighted by (1 + edge_loss_weight * gradient magnitude)."""
 
     use_depth_attenuation: bool = True
@@ -237,6 +238,55 @@ class PearlModelConfig(ModelConfig):
     in world space) instead of random offsets in the ellipsoid.
     """
 
+    # ------------------------------------------------------------------
+    # Principle A: hard-budget density control (Eq. 11-17)
+    # ------------------------------------------------------------------
+
+    densify_h_thresh: float = 0.0008
+    """Threshold on densification score h_i (Eq. 13) to form split/dup candidates (Eq. 16).
+
+    Practical note: set this on the same scale as densify_grad_thresh; by default we mirror the 3DGS gradient threshold.
+    """
+
+    lambda_E: float = 1.0
+    """λ_E in Eq. (13), controlling how strongly persistent error biases densification."""
+
+    lambda_U: float = 1.0
+    """λ_U in Eq. (17), controlling how strongly persistent error biases utility pruning when above N_max."""
+
+    error_ema_eta: float = 0.95
+    """EMA coefficient η for persistent error (Eq. 12). Larger = slower updates."""
+
+    error_attr_every: int = 5
+    """Update residual-attributed error stats every this many training steps (performance control)."""
+
+    error_attr_num_pixels: int = 4096
+    """Number of pixels |Ω_t| sampled for residual attribution when updating E_i^(t)."""
+
+    error_attr_topk: int = 32
+    """Max number of Gaussians per pixel used for approximate compositing weights in residual attribution."""
+
+    error_attr_alpha_thresh: float = 1e-4
+    """Ignore very small per-pixel alpha contributions when attributing residuals."""
+
+    # ------------------------------------------------------------------
+    # Principle B: medium-consistent supervision (Eq. 24-28)
+    # ------------------------------------------------------------------
+
+    enable_attn_regularization: bool = True
+    """If True, apply attenuation regularization L_attn (magnitude/smoothness/ordering)."""
+
+    attn_loss_weight: float = 0.01
+    """λ_attn in Eq. (28)."""
+
+    attn_prior_beta: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """Weak prior β_0 (dataset mean) in L_attn-mag."""
+
+    attn_lambda_beta: float = 1.0
+    attn_lambda_smooth: float = 1.0
+    attn_lambda_ord: float = 1.0
+
+
 
 class PearlModel(Model):
     """
@@ -254,13 +304,39 @@ class PearlModel(Model):
     ):
         self.seed_points = seed_points
         super().__init__(*args, **kwargs)
-
-        # Storage for last predicted and ground truth images (used for error-based densification)
+        # Storage for last predicted and ground truth images (used for error-based densification / debugging)
         self.last_pred_image: Optional[torch.Tensor] = None
         self.last_gt_image: Optional[torch.Tensor] = None
-        # Per-Gaussian photometric error accumulation
-        self.gaussian_error_map: Optional[torch.Tensor] = None
-        self.gaussian_error_vis_counts: Optional[torch.Tensor] = None
+
+        # Per-Gaussian persistent error statistics (Eq. 12 in the paper)
+        self.gaussian_error_ema: Optional[torch.Tensor] = None
+        self.gaussian_activity: Optional[torch.Tensor] = None  # g_i, updated from screen-space grads
+
+        # Cached projection/rasterization inputs for residual attribution (updated in get_outputs)
+        self._proj_conics: Optional[torch.Tensor] = None
+        self._proj_depths: Optional[torch.Tensor] = None
+        self._proj_opacity: Optional[torch.Tensor] = None
+        self._proj_num_tiles_hit: Optional[torch.Tensor] = None
+        self._proj_block_width: Optional[int] = None
+        self._proj_hw: Optional[Tuple[int, int]] = None
+        self._proj_gauss_indices: Optional[torch.Tensor] = None  # maps projected tensors -> full gaussian indices
+
+        self._dir_cache = {}  # key -> [H,W,3] unit dirs in camera coords
+
+    def _get_dirs_cam_unit(self, H, W, fx, fy, cx, cy, device, dtype):
+        key = (H, W, float(fx), float(fy), float(cx), float(cy), str(device), str(dtype))
+        if key in self._dir_cache:
+            return self._dir_cache[key]
+
+        y = torch.arange(H, device=device, dtype=dtype)
+        x = torch.arange(W, device=device, dtype=dtype)
+        yy, xx = torch.meshgrid(y, x, indexing="ij")          # (H,W)
+        xx = (xx - cx) / fx
+        yy = (yy - cy) / fy
+        dirs = torch.stack([xx, yy, torch.ones_like(xx)], -1) # (H,W,3)
+        dirs = dirs / (dirs.norm(dim=-1, keepdim=True) + 1e-9)
+        self._dir_cache[key] = dirs
+        return dirs
 
     def populate_modules(self):
         # initialize the medium MLP
@@ -522,7 +598,6 @@ class PearlModel(Model):
         param_groups = self.get_gaussian_param_groups()
         for group, param in param_groups.items():
             self.remove_from_optim(optimizers.optimizers[group], deleted_mask, param)
-        torch.cuda.empty_cache()
 
     def dup_in_optim(self, optimizer, dup_mask, new_params, n=2):
         """adds the parameters to the optimizer"""
@@ -595,6 +670,158 @@ class PearlModel(Model):
         assert background_color.shape == (3,)
         self.background_color = background_color
 
+    def _attenuation_regularization(self, beta: torch.Tensor) -> torch.Tensor:
+        """Attenuation regularization (page 7): L_attn-mag + L_attn-smooth + L_attn-ord.
+
+        Note: The paper defines smoothness on a viewing-sphere neighborhood. Here we use an image-grid neighborhood
+        over the discretized ray directions (equivalent to a local neighborhood in direction space for small FoV).
+        """
+        beta0 = torch.tensor(
+            getattr(self.config, 'attn_prior_beta', (0.0, 0.0, 0.0)),
+            device=beta.device,
+            dtype=beta.dtype,
+        ).view(1, 1, 3)
+
+        l_mag = ((beta - beta0) ** 2).sum(dim=-1).mean()
+
+        # 4-neighbor smoothness on the ray-direction grid
+        dy = (beta[1:, :, :] - beta[:-1, :, :]) ** 2
+        dx = (beta[:, 1:, :] - beta[:, :-1, :]) ** 2
+        l_smooth = dy.sum(dim=-1).mean() + dx.sum(dim=-1).mean()
+
+        # Enforce common underwater absorption ordering: beta_R >= beta_G >= beta_B
+        l_ord = (F.relu(beta[..., 1] - beta[..., 0]) + F.relu(beta[..., 2] - beta[..., 1])).mean()
+
+        lam_beta = float(getattr(self.config, 'attn_lambda_beta', 1.0))
+        lam_smooth = float(getattr(self.config, 'attn_lambda_smooth', 1.0))
+        lam_ord = float(getattr(self.config, 'attn_lambda_ord', 1.0))
+        return lam_beta * l_mag + lam_smooth * l_smooth + lam_ord * l_ord
+
+
+    @torch.no_grad()
+    def _update_gaussian_error_ema(self, err_img: torch.Tensor) -> None:
+        """Update per-Gaussian error EMA using residual attribution (Eq. 11-12).
+
+        err_img: (H,W) scalar L1 residual per pixel.
+        """
+        if self._proj_conics is None or self._proj_depths is None or self._proj_opacity is None or self._proj_num_tiles_hit is None:
+            return
+        if self._proj_block_width is None or self._proj_hw is None:
+            return
+
+        H, W = err_img.shape
+        block_width = int(self._proj_block_width)
+        tile_bounds = ((W + block_width - 1) // block_width, (H + block_width - 1) // block_width, 1)
+
+        # Ensure persistent buffers exist for the full Gaussian set
+        if self.gaussian_error_ema is None or self.gaussian_error_ema.shape[0] != self.num_points:
+            new_ema = torch.zeros((self.num_points,), device=self.device, dtype=torch.float32)
+            if self.gaussian_error_ema is not None:
+                n_old = min(int(self.gaussian_error_ema.shape[0]), int(self.num_points))
+                new_ema[:n_old] = self.gaussian_error_ema[:n_old]
+            self.gaussian_error_ema = new_ema
+
+        # Map projected indices to the full Gaussian indices
+        num_proj = int(self._proj_conics.shape[0])
+        if self._proj_gauss_indices is None:
+            full_idx_map = torch.arange(num_proj, device=self.device, dtype=torch.long)
+        else:
+            full_idx_map = self._proj_gauss_indices.to(self.device).long()
+
+        # Sample pixels Ω_t proportional to residual magnitude
+        n_samp = int(getattr(self.config, 'error_attr_num_pixels', 2048))
+        n_samp = max(1, min(n_samp, H * W))
+        flat_err = err_img.reshape(-1)
+        probs = (flat_err + 1e-6)
+        probs = probs / probs.sum()
+        pix = torch.multinomial(probs, n_samp, replacement=False)
+        ys = (pix // W).long()
+        xs = (pix % W).long()
+
+        # Build tile bins (same mapping as rasterizer)
+        num_intersects, cum_tiles_hit = compute_cumulative_intersects(self._proj_num_tiles_hit.int())
+        if num_intersects < 1:
+            return
+        (_, _, _, gaussian_ids_sorted, tile_bins) = bin_and_sort_gaussians(
+            num_proj,
+            num_intersects,
+            self.xys.detach(),
+            self._proj_depths.detach(),
+            self.radii.detach(),
+            cum_tiles_hit,
+            tile_bounds,
+            block_width,
+        )
+
+        gaussian_ids_sorted = gaussian_ids_sorted.squeeze(-1).long()
+        tile_bins_cpu = tile_bins.long().detach()
+
+        xys = self.xys.detach()
+        conics = self._proj_conics.detach()
+        depths = self._proj_depths.detach().squeeze(-1)
+        opacity = self._proj_opacity.detach().squeeze(-1)
+
+        topk = int(getattr(self.config, 'error_attr_topk', 16))
+        alpha_thresh = float(getattr(self.config, 'error_attr_alpha_thresh', 1e-4))
+
+        num_acc = torch.zeros_like(self.gaussian_error_ema)
+        den_acc = torch.zeros_like(self.gaussian_error_ema)
+
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            tile_x = x // block_width
+            tile_y = y // block_width
+            tile_id = tile_y * tile_bounds[0] + tile_x
+            if tile_id < 0 or tile_id >= tile_bins_cpu.shape[0]:
+                continue
+            start, end = tile_bins_cpu[tile_id]
+            if end <= start:
+                continue
+            cand = gaussian_ids_sorted[int(start) : int(end)]
+            if cand.numel() == 0:
+                continue
+
+            xy = xys[cand]
+            dx = xy[:, 0] - float(x)
+            dy = xy[:, 1] - float(y)
+            c = conics[cand]
+            q = c[:, 0] * dx * dx + 2.0 * c[:, 1] * dx * dy + c[:, 2] * dy * dy
+            a = opacity[cand] * torch.exp(-0.5 * q)
+            m = a > alpha_thresh
+            if not bool(m.any()):
+                continue
+            cand = cand[m]
+            a = a[m]
+
+            if cand.numel() > topk:
+                a, idx = torch.topk(a, k=topk, largest=True)
+                cand = cand[idx]
+
+            d = depths[cand]
+            order = torch.argsort(d)
+            cand = cand[order]
+            a = a[order].clamp(0.0, 0.999)
+
+            one_minus = (1.0 - a)
+            T_prev = torch.cumprod(torch.cat([a.new_ones(1), one_minus[:-1]]), dim=0)
+            w = a * T_prev
+            sumw = w.sum() + 1e-6
+            r = w / sumw
+
+            e = err_img[y, x]
+            full_cand = full_idx_map[cand]
+            num_acc.index_add_(0, full_cand, r * e)
+            den_acc.index_add_(0, full_cand, r)
+
+        mask = den_acc > 0
+        if not bool(mask.any()):
+            return
+        E_inst = torch.zeros_like(self.gaussian_error_ema)
+        E_inst[mask] = num_acc[mask] / (den_acc[mask] + 1e-6)
+
+        eta = float(getattr(self.config, 'error_ema_eta', 0.95))
+        self.gaussian_error_ema[mask] = eta * self.gaussian_error_ema[mask] + (1.0 - eta) * E_inst[mask]
+
+
     def refinement_after(self, optimizers: Optimizers, step):
         assert step == self.step
         if self.step <= self.config.warmup_length:
@@ -609,53 +836,66 @@ class PearlModel(Model):
                 self.step < self.config.stop_split_at
                 and (self.step % reset_interval > self.num_train_data + self.config.refine_every)
             )
+            deleted_masks = []
             if do_densification:
-                # Compute average per-Gaussian gradient norm for traditional densification
+                # Activity statistic g_i from screen-space gradients (used in h_i and utility u_i).
                 assert self.xys_grad_norm is not None and self.vis_counts is not None and self.max_2Dsize is not None
-                avg_grad_norm = (self.xys_grad_norm / self.vis_counts) * 0.5 * max(self.last_size[0], self.last_size[1])
+                g_i = (self.xys_grad_norm / self.vis_counts) * 0.5 * max(self.last_size[0], self.last_size[1])
+                g_i = g_i.squeeze().detach().float()
 
-                high_grads = (avg_grad_norm > self.config.densify_grad_thresh).squeeze()
+                # Ensure persistent buffers exist and have current size
+                if self.gaussian_activity is None or self.gaussian_activity.shape[0] != self.num_points:
+                    self.gaussian_activity = torch.zeros((self.num_points,), device=self.device, dtype=torch.float32)
+                self.gaussian_activity[:] = g_i
 
-                # ------------------------------------------------------------------
-                # Error-map driven densification (Module-1)
-                # If gaussian_error_map has been accumulated, compute average error per gaussian.
-                if self.config.enable_error_densification and self.gaussian_error_map is not None and self.gaussian_error_vis_counts is not None:
-                    avg_gauss_err = self.gaussian_error_map / (self.gaussian_error_vis_counts + 1e-6)
+                if self.gaussian_error_ema is None or self.gaussian_error_ema.shape[0] != self.num_points:
+                    new_ema = torch.zeros((self.num_points,), device=self.device, dtype=torch.float32)
+                    if self.gaussian_error_ema is not None:
+                        n_old = min(int(self.gaussian_error_ema.shape[0]), int(self.num_points))
+                        new_ema[:n_old] = self.gaussian_error_ema[:n_old]
+                    self.gaussian_error_ema = new_ema
 
-                    # During early training, use a looser (higher) error threshold to avoid
-                    # exploding the number of Gaussians while geometry is still coarse.
-                    eff_error_thresh = self.config.densify_error_thresh
-                    warmup_steps = self.config.densify_error_warmup_steps
-                    if warmup_steps > 0 and self.step < warmup_steps:
-                        # linearly decay from 2×densify_error_thresh to 1× over warmup_steps
-                        alpha = float(self.step) / float(warmup_steps)
-                        eff_error_thresh = self.config.densify_error_thresh * (2.0 - alpha)
+                Ebar = self.gaussian_error_ema
+                active = (self.vis_counts > 0).squeeze()
+                Ebar_mean = Ebar[active].mean() if bool(active.any()) else Ebar.mean()
 
-                    high_error = (avg_gauss_err > eff_error_thresh).squeeze()
-                    # Combine gradient- and error-based criteria
-                    high_grads = high_grads | high_error
+                # Densification score h_i (Eq. 13): combines activity and persistent error
+                lamE = float(getattr(self.config, 'lambda_E', 1.0))
+                h_i = g_i * (1.0 + lamE * (Ebar / (Ebar_mean + 1e-6)))
 
-                # Determine which Gaussians to split (large) or duplicate (small)
-                splits = (self.scales.exp().max(dim=-1).values > self.config.densify_size_thresh).squeeze()
+                # Candidate sets (Eq. 16)
+                s1 = torch.exp(self.scales).max(dim=-1).values.squeeze()
+                h_mask = h_i > float(getattr(self.config, 'densify_h_thresh', self.config.densify_grad_thresh))
+
+                splits = (s1 > self.config.densify_size_thresh).squeeze() & h_mask
+                dups = (s1 <= self.config.densify_size_thresh).squeeze() & h_mask
                 if self.step < self.config.stop_screen_size_at:
-                    splits |= (self.max_2Dsize > self.config.split_screen_size).squeeze()
-                splits &= high_grads
+                    splits = splits | ((self.max_2Dsize > self.config.split_screen_size).squeeze() & h_mask)
 
-                dups = (self.scales.exp().max(dim=-1).values <= self.config.densify_size_thresh).squeeze()
-                dups &= high_grads
-
-                # If max_gaussians is specified, cap the number of new Gaussians (Module-2)
-                num_existing = self.num_points
-                nsamps = self.config.n_split_samples
-                # predicted number of new gaussians
-                num_new = nsamps * splits.sum().item() + dups.sum().item()
+                # Budget projection (Eq. 15): sort by h_i and take largest feasible prefix
+                nsamps = int(self.config.n_split_samples)
                 if self.config.enable_budget_aware_split and self.config.max_gaussians is not None:
-                    max_allowed_new = max(0, self.config.max_gaussians - num_existing)
-                    if num_new > max_allowed_new:
-                        # If exceeding, reduce splits/dups proportionally: skip densification this round
+                    budget = max(0, int(self.config.max_gaussians) - int(self.num_points))
+                    cand_mask = splits | dups
+                    cand_idx = torch.where(cand_mask)[0]
+                    if cand_idx.numel() > 0 and budget > 0:
+                        order = torch.argsort(h_i[cand_idx], descending=True)
+                        selected = torch.zeros_like(cand_mask, dtype=torch.bool)
+                        for j in order.tolist():
+                            i = int(cand_idx[j].item())
+                            cost = nsamps if bool(splits[i].item()) else 1
+                            if cost <= budget:
+                                selected[i] = True
+                                budget -= cost
+                            else:
+                                break
+                            if budget <= 0:
+                                break
+                        splits = splits & selected
+                        dups = dups & selected
+                    else:
                         splits = torch.zeros_like(splits, dtype=torch.bool)
                         dups = torch.zeros_like(dups, dtype=torch.bool)
-                        num_new = 0
 
                 # Perform splitting and duplicating
                 split_params = self.split_gaussians(splits, nsamps)
@@ -667,12 +907,21 @@ class PearlModel(Model):
                         torch.cat([param.detach(), split_params[name], dup_params[name]], dim=0)
                     )
 
+                # Extend persistent stats for new Gaussians (copy parent stats)
+                new_E_split = Ebar[splits].repeat(nsamps) if int(splits.sum()) > 0 else Ebar.new_empty((0,))
+                new_E_dup = Ebar[dups] if int(dups.sum()) > 0 else Ebar.new_empty((0,))
+                self.gaussian_error_ema = torch.cat([Ebar, new_E_split, new_E_dup], dim=0)
+
+                new_g_split = g_i[splits].repeat(nsamps) if int(splits.sum()) > 0 else g_i.new_empty((0,))
+                new_g_dup = g_i[dups] if int(dups.sum()) > 0 else g_i.new_empty((0,))
+                self.gaussian_activity = torch.cat([g_i, new_g_split, new_g_dup], dim=0)
+
                 # Extend screen-size statistics for new Gaussians
                 self.max_2Dsize = torch.cat(
                     [
                         self.max_2Dsize,
-                        torch.zeros_like(split_params["scales"][:, 0]),
-                        torch.zeros_like(dup_params["scales"][:, 0]),
+                        torch.zeros_like(split_params['scales'][:, 0]),
+                        torch.zeros_like(dup_params['scales'][:, 0]),
                     ],
                     dim=0,
                 )
@@ -696,14 +945,29 @@ class PearlModel(Model):
                         ),
                     )
                 )
-                deleted_mask = self.cull_gaussians(splits_mask)
-            elif self.step >= self.config.stop_split_at and self.config.continue_cull_post_densification:
-                deleted_mask = self.cull_gaussians()
-            else:
-                deleted_mask = None
+                deleted_masks.append(self.cull_gaussians(splits_mask))
 
-            if deleted_mask is not None:
-                self.remove_from_all_optim(optimizers, deleted_mask)
+                # Budget-aware pruning (Eq. 17) if still above cap after standard pruning
+                if self.config.enable_budget_aware_split and self.config.max_gaussians is not None and self.num_points > int(self.config.max_gaussians):
+                    k_remove = int(self.num_points - int(self.config.max_gaussians))
+                    Ebar2 = self.gaussian_error_ema if self.gaussian_error_ema is not None else torch.zeros((self.num_points,), device=self.device)
+                    g2 = self.gaussian_activity if self.gaussian_activity is not None else torch.ones_like(Ebar2)
+                    Emean2 = Ebar2.mean()
+                    lamU = float(getattr(self.config, 'lambda_U', 1.0))
+                    util = g2 * (1.0 + lamU * (Ebar2 / (Emean2 + 1e-6)))
+                    low = torch.topk(util, k=k_remove, largest=False).indices
+                    extra = torch.zeros((self.num_points,), device=self.device, dtype=torch.bool)
+                    extra[low] = True
+                    deleted_masks.append(self.cull_gaussians(extra))
+            elif self.step >= self.config.stop_split_at and self.config.continue_cull_post_densification:
+                deleted_masks = [self.cull_gaussians()]
+            else:
+                deleted_masks = []
+
+            if deleted_masks:
+                for dm in deleted_masks:
+                    if dm is not None:
+                        self.remove_from_all_optim(optimizers, dm)
 
                 # reset the exp of optimizer
                 for key in ["medium_mlp"]:
@@ -737,10 +1001,6 @@ class PearlModel(Model):
             self.vis_counts = None
             self.depths_accum = None
             self.max_2Dsize = None
-            # Reset accumulated photometric error maps after densification to avoid mixing across topologies
-            if self.config.enable_error_densification:
-                self.gaussian_error_map = None
-                self.gaussian_error_vis_counts = None
 
     def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None):
         """
@@ -769,6 +1029,12 @@ class PearlModel(Model):
             toobigs_count = torch.sum(toobigs).item()
         for name, param in self.gauss_params.items():
             self.gauss_params[name] = torch.nn.Parameter(param[~culls])
+
+        # Keep auxiliary per-Gaussian statistics in sync with topology changes
+        if self.gaussian_error_ema is not None:
+            self.gaussian_error_ema = self.gaussian_error_ema[~culls]
+        if self.gaussian_activity is not None:
+            self.gaussian_activity = self.gaussian_activity[~culls]
 
         CONSOLE.log(
             f"Culled {n_bef - self.num_points} gaussians "
@@ -1000,14 +1266,15 @@ class PearlModel(Model):
 
         # Medium
         # Encode directions
-        y = torch.linspace(0., H, H, device=self.device)
-        x = torch.linspace(0., W, W, device=self.device)
-        yy, xx = torch.meshgrid(y, x)
-        yy = (yy - cy) / camera.fy.item()
-        xx = (xx - cx) / camera.fx.item()
-        directions = torch.stack([xx, yy, torch.ones_like(xx)], dim=-1)
-        norms = torch.linalg.norm(directions, dim=-1, keepdim=True)
-        directions = directions / norms
+        # y = torch.linspace(0., H, H, device=self.device)
+        # x = torch.linspace(0., W, W, device=self.device)
+        # yy, xx = torch.meshgrid(y, x)
+        # yy = (yy - cy) / camera.fy.item()
+        # xx = (xx - cx) / camera.fx.item()
+        # directions = torch.stack([xx, yy, torch.ones_like(xx)], dim=-1)
+        # norms = torch.linalg.norm(directions, dim=-1, keepdim=True)
+        # directions = directions / norms
+        directions = self._get_dirs_cam_unit(H, W, camera.fx.item(), camera.fy.item(), cx, cy, device=self.device, dtype=R.dtype)
         directions = directions @ R.T
 
         # directions_flat = directions.view(-1, 3)
@@ -1089,7 +1356,7 @@ class PearlModel(Model):
                 accumulation = medium_rgb.new_zeros(*rgb.shape[:2], 1)
                 return {"rgb": rgb, "depth": depth, "accumulation": accumulation, "background": medium_rgb,
                         "rgb_object": torch.zeros_like(rgb), "rgb_medium": medium_rgb, "pred_image": rgb,
-                        "medium_rgb": medium_rgb, "medium_bs": medium_bs, "medium_attn": medium_attn}
+                        "medium_rgb": medium_rgb, "medium_bs": medium_bs, "medium_attn": medium_attn, "medium_attn_raw": medium_attn}
         else:
             crop_ids = None
 
@@ -1129,6 +1396,17 @@ class PearlModel(Model):
 
         self.depths = depths.detach()
 
+        # Cache projection buffers for residual attribution (used by error-driven densification)
+        self._proj_conics = conics.detach()
+        self._proj_depths = depths.detach()
+        self._proj_num_tiles_hit = num_tiles_hit.detach()
+        self._proj_block_width = BLOCK_WIDTH
+        self._proj_hw = (H, W)
+        if crop_ids is not None and crop_ids.sum() != 0:
+            self._proj_gauss_indices = torch.where(crop_ids)[0].detach()
+        else:
+            self._proj_gauss_indices = None
+
         # rescale the camera back to original dimensions before returning
         camera.rescale_output_resolution(camera_downscale)
 
@@ -1138,7 +1416,7 @@ class PearlModel(Model):
             accumulation = medium_rgb.new_zeros(*rgb.shape[:2], 1)
             return {"rgb": rgb, "depth": depth, "accumulation": accumulation, "background": medium_rgb,
                     "rgb_object": torch.zeros_like(rgb), "rgb_clear": torch.zeros_like(rgb), "rgb_clear_clamp": torch.zeros_like(rgb), "rgb_medium": medium_rgb, "pred_image": rgb,
-                    "medium_rgb": medium_rgb, "medium_bs": medium_bs, "medium_attn": medium_attn}
+                    "medium_rgb": medium_rgb, "medium_bs": medium_bs, "medium_attn": medium_attn, "medium_attn_raw": medium_attn}
 
         if self.training:
             self.xys.retain_grad()
@@ -1153,23 +1431,18 @@ class PearlModel(Model):
             rgbs = torch.clamp(rgbs + 0.5, min=0.0)  # type: ignore
         else:
             rgbs = torch.sigmoid(colors_crop[:, 0, :])
-
-        # Depth-attenuation warmup:
-        # - during training, disable attenuation for the first depth_attenuation_warmup_steps
-        # - during eval (self.training == False), always apply attenuation
+        # Optional global scaling of the direction-conditioned attenuation field β(v).
+        # This keeps the model aligned with Eq. (25) while allowing a conservative warmup.
+        medium_attn_eff = medium_attn
         apply_depth_attn = (
             self.config.enable_depth_attenuation
             and self.config.use_depth_attenuation
             and self.attenuation_coeff is not None
             and (not self.training or self.step >= self.config.depth_attenuation_warmup_steps)
         )
-
         if apply_depth_attn:
-            # Ensure positive attenuation coefficients via softplus
-            coeff = torch.nn.functional.softplus(self.attenuation_coeff).to(rgbs)
-            if depths is not None:
-                atten = torch.exp(-depths.unsqueeze(-1) * coeff.unsqueeze(0))  # (N,3)
-                rgbs = rgbs * atten
+            coeff = torch.nn.functional.softplus(self.attenuation_coeff).to(medium_attn_eff)
+            medium_attn_eff = medium_attn_eff * coeff.view(1, 1, 3)
 
         assert (num_tiles_hit > 0).any()  # type: ignore
 
@@ -1181,6 +1454,9 @@ class PearlModel(Model):
             opacities = torch.sigmoid(opacities_crop)
         else:
             raise ValueError("Unknown rasterize_mode: %s", self.config.rasterize_mode)
+
+        # Cache the opacity actually used by the rasterizer (depends on rasterize_mode)
+        self._proj_opacity = opacities.detach()
 
         self.xys_grad_abs = torch.zeros_like(self.xys)
 
@@ -1195,7 +1471,7 @@ class PearlModel(Model):
             opacities,
             medium_rgb,
             medium_bs,
-            medium_attn,
+            medium_attn_eff,
             H,
             W,
             BLOCK_WIDTH,
@@ -1214,7 +1490,7 @@ class PearlModel(Model):
 
         return {"rgb": rgb, "depth": depth_im, "accumulation": alpha, "background": medium_rgb,
                 "rgb_object": rgb_object, "rgb_clear": rgb_clear, "rgb_clear_clamp": rgb_clear_clamp, "rgb_medium": rgb_medium, "pred_image": rgb,
-                "medium_rgb": medium_rgb, "medium_bs": medium_bs, "medium_attn": medium_attn}  # type: ignore
+                "medium_rgb": medium_rgb, "medium_bs": medium_bs, "medium_attn": medium_attn_eff, "medium_attn_raw": medium_attn}  # type: ignore
 
     def get_gt_img(self, image: torch.Tensor):
         """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
@@ -1295,19 +1571,17 @@ class PearlModel(Model):
         else:
             per_pixel_error = ((pred_img - gt_img) / (pred_img.detach() + 1e-3)) ** 2
             recon_loss = per_pixel_error.mean()
-
-        # Edge-aware weighting: upweight error near edges in GT image
+        # Edge-aware reweighting (Eq. 23-24): use Sobel magnitude on grayscale GT, normalized to [0,1].
+        per_pixel_l1 = torch.abs(gt_img - pred_img).mean(dim=-1)  # (H,W)
+        edge_loss = gt_img.new_tensor(0.0)
+        effective_edge_weight = 0.0
         if self.config.enable_edge_loss and self.config.edge_loss_weight > 0:
-            # Use a small weight, ramped up over edge_loss_warmup_steps, and clamp to <= 0.3.
-            effective_edge_weight = self.config.edge_loss_weight
+            effective_edge_weight = float(self.config.edge_loss_weight)
             if self.training and self.config.edge_loss_warmup_steps > 0:
                 t = min(1.0, float(self.step) / float(self.config.edge_loss_warmup_steps))
-                effective_edge_weight = effective_edge_weight * t
-            # Clamp to avoid over-emphasising noisy underwater boundaries
-            effective_edge_weight = min(effective_edge_weight, 0.3)
+                effective_edge_weight *= t
 
             if effective_edge_weight > 0.0:
-                # Compute gradient magnitude of GT image (grayscale)
                 gray = gt_img.mean(dim=-1, keepdim=True)
                 sobel_x = torch.tensor(
                     [[1, 0, -1], [2, 0, -2], [1, 0, -1]],
@@ -1320,13 +1594,16 @@ class PearlModel(Model):
                     device=gt_img.device,
                 ).view(1, 1, 3, 3)
 
-                gray = gray.permute(2, 0, 1).unsqueeze(0)  # (1,1,H,W)
-                grad_x = torch.nn.functional.conv2d(gray, sobel_x, padding=1)
-                grad_y = torch.nn.functional.conv2d(gray, sobel_y, padding=1)
-                grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2).squeeze(0).permute(1, 2, 0)
+                gray_nchw = gray.permute(2, 0, 1).unsqueeze(0)  # (1,1,H,W)
+                grad_x = torch.nn.functional.conv2d(gray_nchw, sobel_x, padding=1)
+                grad_y = torch.nn.functional.conv2d(gray_nchw, sobel_y, padding=1)
+                grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2).squeeze(0).squeeze(0)  # (H,W)
 
-                weight_map = 1.0 + effective_edge_weight * grad_mag
-                recon_loss = (per_pixel_error * weight_map).mean()
+                gmin = grad_mag.amin()
+                gmax = grad_mag.amax()
+                g_tilde = (grad_mag - gmin) / (gmax - gmin + 1e-6)
+                weight_map = 1.0 + g_tilde
+                edge_loss = (per_pixel_l1 * weight_map).mean()
 
         # SSIM component
         if self.config.ssim_loss != "ssim":
@@ -1339,46 +1616,33 @@ class PearlModel(Model):
                 gt_img.permute(2, 0, 1)[None, ...],
                 pred_img.permute(2, 0, 1)[None, ...],
             )
+        base_loss = (1 - self.config.ssim_lambda) * recon_loss + self.config.ssim_lambda * simloss
 
-        main_loss = (1 - self.config.ssim_lambda) * recon_loss + self.config.ssim_lambda * simloss
-        # ----------------------------------------------------------------------
-        # Photometric error map accumulation for error-driven densification
-        # Only accumulate during training when last_pred_image and last_gt_image are available
+        # Attenuation regularization (Eq. 28 with attenuation terms)
+        attn_reg = gt_img.new_tensor(0.0)
+        if bool(getattr(self.config, 'enable_attn_regularization', True)) and float(getattr(self.config, 'attn_loss_weight', 0.0)) > 0.0:
+            beta = outputs.get('medium_attn', None)
+            if beta is not None:
+                attn_reg = self._attenuation_regularization(beta)
+
+        main_loss = base_loss + effective_edge_weight * edge_loss + float(getattr(self.config, 'attn_loss_weight', 0.0)) * attn_reg
+
+        # Update per-Gaussian persistent error stats (Eq. 11-12) for error-driven densification.
         if self.training and self.config.enable_error_densification:
             try:
-                # Compute per-pixel absolute error (averaged over channels)
-                err_img = torch.abs(self.last_pred_image - self.last_gt_image).mean(dim=-1)  # (H,W)
-                # Ensure xys and last_size are available
-                if hasattr(self, "xys") and self.xys is not None and self.last_size is not None:
-                    H, W = self.last_size
-                    # self.xys contains projected centers of Gaussians in pixel coordinates (float)
-                    # Clamp to valid pixel range
-                    px = torch.clamp(self.xys[:, 0].round().long(), 0, W - 1)
-                    py = torch.clamp(self.xys[:, 1].round().long(), 0, H - 1)
-                    # Gather error per Gaussian from pixel error map
-                    gauss_err = err_img[py, px]  # (N,)
-                    # Initialize or accumulate error and counts
-                    if self.gaussian_error_map is None:
-                        self.gaussian_error_map = gauss_err.clone().detach()
-                        self.gaussian_error_vis_counts = torch.ones_like(gauss_err, dtype=torch.float32)
-                    else:
-                        # Expand error_map if new Gaussians have been added
-                        if self.gaussian_error_map.shape[0] != gauss_err.shape[0]:
-                            # Resize by padding zeros and counts for new points
-                            n_old = self.gaussian_error_map.shape[0]
-                            n_new = gauss_err.shape[0]
-                            # initialize new entries to zero error and zero count
-                            if n_new > n_old:
-                                pad_len = n_new - n_old
-                                self.gaussian_error_map = torch.cat([self.gaussian_error_map, torch.zeros(pad_len, device=self.device)], dim=0)
-                                self.gaussian_error_vis_counts = torch.cat([self.gaussian_error_vis_counts, torch.zeros(pad_len, device=self.device)], dim=0)
-                        # accumulate
-                        self.gaussian_error_map += gauss_err.detach()
-                        self.gaussian_error_vis_counts += 1.0
+                every = int(getattr(self.config, 'error_attr_every', 1))
+                if every <= 1 or (self.step % every == 0):
+                    self._update_gaussian_error_ema(per_pixel_l1.detach())
             except Exception:
-                # Do not crash training if error accumulation fails
                 pass
-        return {"main_loss": main_loss}
+
+        return {
+            'main_loss': main_loss,
+            'recon_loss': recon_loss,
+            'ssim_loss': simloss,
+            'edge_loss': edge_loss,
+            'attn_reg': attn_reg,
+        }
 
     @torch.no_grad()
     def get_outputs_for_camera(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, torch.Tensor]:

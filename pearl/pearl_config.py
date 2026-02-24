@@ -29,7 +29,9 @@ pearl_method = MethodSpecification(
                 main_loss="reg_l1",
                 ssim_loss="reg_ssim",
                 zero_medium=False,
-                                          ),
+                attn_loss_weight=0.01,
+                error_attr_every=10,
+            ),
         ),
         optimizers={
             "means": {
@@ -113,6 +115,8 @@ pearl_method_big = MethodSpecification(
             model=PearlModelConfig(
                 num_steps=NUM_STEPS,
                 continue_cull_post_densification=False,
+                attn_loss_weight=0.01,
+                error_attr_every=10,
             ),
         ),
         optimizers={

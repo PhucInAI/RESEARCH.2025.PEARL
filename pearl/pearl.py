@@ -138,7 +138,7 @@ class PearlModelConfig(ModelConfig):
     """Number of gaussians to initialize if random init is used"""
     random_scale: float = 10.
     "Size of the cube to initialize random gaussians within"
-    ssim_lambda: float = 0.25
+    ssim_lambda: float = 0.1
     """weight of ssim loss"""
     main_loss: Literal["l1", "reg_l1", "reg_l2"] = "reg_l1"
     """main loss to use"""
@@ -211,7 +211,7 @@ class PearlModelConfig(ModelConfig):
     use_depth_attenuation: bool = True
     """If True, apply a depth‑dependent color attenuation model to object colors before rasterization."""
 
-    attenuation_coeff_init: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    attenuation_coeff_init: Tuple[float, float, float] = (0.541,0.541,0.541)
     """Initial attenuation coefficients (R,G,B) for depth‑dependent color attenuation. Only used if use_depth_attenuation=True."""
 
     # Complexity-based / depth-guided initialization

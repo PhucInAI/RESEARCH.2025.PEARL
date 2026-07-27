@@ -67,14 +67,8 @@ def rasterize_gaussians(
         # make sure colors are float [0,1]
         colors = colors.float() / 255
 
-    # if background is not None:
-    #     assert (
-    #         background.shape[0] == colors.shape[-1]
-    #     ), f"incorrect shape of background color tensor, expected shape {colors.shape[-1]}"
-    # else:
-    background = torch.ones(
-        colors.shape[-1], dtype=torch.float32, device=colors.device
-    )
+    if background is None:
+        background = torch.ones(colors.shape[-1], dtype=torch.float32, device=colors.device)
 
     if xys.ndimension() != 2 or xys.size(1) != 2:
         raise ValueError("xys must have dimensions (N, 2)")
@@ -208,7 +202,7 @@ class _RasterizeGaussians(Function):
             final_idx,
             first_idx,
         )
-        
+
         if return_alpha:
             out_alpha = 1 - final_Ts
             return out_img, out_clr, out_medium, depth_im, out_alpha
@@ -279,7 +273,7 @@ class _RasterizeGaussians(Function):
                 v_out_medium,
                 v_out_alpha,
             )
-            
+
         return (
             v_xy,  # xys
             None,  # xys_grad_abs

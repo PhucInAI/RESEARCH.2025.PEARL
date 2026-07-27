@@ -2,6 +2,8 @@ conda create --name pearl -y python=3.12
 conda activate pearl
 python -m pip install --upgrade pip
 
+# python 2.10
+pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
 # python 2.9
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124

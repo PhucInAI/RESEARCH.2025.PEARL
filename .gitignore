@@ -126,3 +126,6 @@ compile_commands.json
 **cuda**
 **renders**
 *.json
+*.png
+*.jpg
+*.pdf

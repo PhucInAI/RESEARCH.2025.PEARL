@@ -11,6 +11,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, FancyArrowPatch
 
+from pearl.ai_logger import aiLogger
+
 FIGURES_DIR = Path(__file__).resolve().parents[1] / "assets" / "figures"
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +113,7 @@ def make_split_duplicate_icon(
     plt.tight_layout(pad=0)
     plt.savefig(out_path, transparent=True, bbox_inches="tight", pad_inches=0.02)
     plt.close()
-    print(f"Saved: {out_path}")
+    aiLogger.info(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":

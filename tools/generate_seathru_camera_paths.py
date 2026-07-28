@@ -14,6 +14,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
+from pearl.ai_logger import aiLogger
+
 
 @dataclass(frozen=True)
 class CameraModel:
@@ -432,7 +434,7 @@ def main() -> None:
 
     for scene_dir in scene_dirs:
         output_path = generate_scene_camera_path(scene_dir=scene_dir)
-        print(f"Wrote {output_path}")
+        aiLogger.info(f"Wrote {output_path}")
 
 
 if __name__ == "__main__":

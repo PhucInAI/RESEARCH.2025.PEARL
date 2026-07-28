@@ -7,6 +7,8 @@ from subprocess import DEVNULL, call
 from rich.console import Console
 from torch.utils.cpp_extension import _get_build_directory, load
 
+from pearl.ai_logger import aiLogger
+
 PATH = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -86,9 +88,7 @@ except ImportError:
                     extra_include_paths=extra_include_paths,
                 )
     else:
-        Console().print(
-            "[yellow]pearl: No CUDA toolkit found. pearl will be disabled.[/yellow]"
-        )
+        aiLogger.warning("pearl: No CUDA toolkit found. pearl will be disabled.")
 
 
 __all__ = ["_C"]

@@ -9,6 +9,8 @@ import torch
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.cameras.cameras import Cameras
 
+from pearl.ai_logger import aiLogger
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "assets" / "results"
 
@@ -153,7 +155,7 @@ def main():
             grid_seed = args.seed + int(round(r * 1000)) * 100000 + int(round(t * 1e6))
             res = eval_once(pipeline, r, t, grid_seed)
             results.append(res)
-            print(res)
+            aiLogger.info(res)
 
     payload = {
         "load_config": str(args.load_config),
@@ -163,7 +165,7 @@ def main():
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2))
-    print(f"Saved: {args.out}")
+    aiLogger.info(f"Saved: {args.out}")
 
 
 if __name__ == "__main__":

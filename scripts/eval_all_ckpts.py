@@ -7,6 +7,8 @@ from pathlib import Path
 from statistics import fmean
 from math import inf
 
+from pearl.ai_logger import aiLogger
+
 STEP_RE = re.compile(r"step-(\d+)\.ckpt$")
 
 def posixpath_block(p: Path, indent: str = "") -> str:
@@ -147,12 +149,12 @@ def main():
 
         out_json = step_dir / "metrics.json"
         cmd = ["ns-eval", "--load-config", str(tmp_cfg), "--output-path", str(out_json)]
-        print("[run]", " ".join(cmd))
+        aiLogger.info(" ".join(cmd))
         subprocess.run(cmd, check=True, env=env)
 
         data = json.loads(out_json.read_text())
         if args.debug_first and idx == 0:
-            print("[debug] top-level keys:", list(data.keys())[:50])
+            aiLogger.debug(f"top-level keys: {list(data.keys())[:50]}")
 
         psnr = extract_metric(data, "psnr")
         ssim = extract_metric(data, "ssim")
@@ -173,13 +175,13 @@ def main():
     # If *all* scores are -inf, metrics were not found at all.
     best = max(results, key=score)
     if score(best) == -inf:
-        print("[error] Could not find metrics in any metrics.json. Use --debug-first to inspect keys.")
+        aiLogger.error("Could not find metrics in any metrics.json. Use --debug-first to inspect keys.")
         (eval_root / "all_results.json").write_text(json.dumps(results, indent=2))
         return
 
     (eval_root / "all_results.json").write_text(json.dumps(results, indent=2))
     (eval_root / f"BEST_{args.metric}.json").write_text(json.dumps(best, indent=2))
-    print("BEST:", best)
+    aiLogger.info(f"BEST: {best}")
 
 if __name__ == "__main__":
     main()

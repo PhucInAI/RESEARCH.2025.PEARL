@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.cameras.cameras import Cameras
 
+from pearl.ai_logger import aiLogger
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "assets" / "results"
 
@@ -202,7 +204,7 @@ def main():
             for r in rgb_list:
                 res = eval_with_hook(pipeline, rgb_scale=r, bs_scale=b, attn_scale=a)
                 results.append(res)
-                print(res)
+                aiLogger.info(res)
 
     payload = {
         "load_config": str(args.load_config),
@@ -217,7 +219,7 @@ def main():
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2))
-    print(f"Saved: {args.out}")
+    aiLogger.info(f"Saved: {args.out}")
 
 
 if __name__ == "__main__":

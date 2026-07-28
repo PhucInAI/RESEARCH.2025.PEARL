@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+from pearl.ai_logger import aiLogger
+
 FIGURES_DIR = Path(__file__).resolve().parents[1] / "assets" / "figures"
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -71,7 +73,7 @@ def make_budget_control_icon(
     plt.tight_layout()
     plt.savefig(out_path, transparent=True, bbox_inches="tight", pad_inches=0.02)
     plt.close()
-    print(f"Saved: {out_path}")
+    aiLogger.info(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":

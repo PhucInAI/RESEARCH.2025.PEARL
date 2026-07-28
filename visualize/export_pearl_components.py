@@ -11,6 +11,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 
+from pearl.ai_logger import aiLogger
+
 FIGURES_DIR = Path(__file__).resolve().parents[1] / "assets" / "figures"
 
 
@@ -303,10 +305,10 @@ def main():
         for a, b, lab in connections:
             w.writerow([a, b, lab])
 
-    print(f"[OK] Wrote assets to: {out_dir}")
-    print(f" - images/: input/pred/residual/edge PNGs")
-    print(f" - boxes/: component PNGs")
-    print(f" - connections.csv: all arrows to draw in draw.io")
+    aiLogger.info(f"Wrote assets to: {out_dir}")
+    aiLogger.info(" - images/: input/pred/residual/edge PNGs")
+    aiLogger.info(" - boxes/: component PNGs")
+    aiLogger.info(" - connections.csv: all arrows to draw in draw.io")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageFilter
 
+from pearl.ai_logger import aiLogger
+
 BACKGROUND_COLOR = np.array([6, 10, 14], dtype=np.uint8)
 MAX_GAUSSIAN_RADIUS = 6
 GAUSSIAN_RADIUS_SCALE = 1.8
@@ -627,17 +629,17 @@ def main() -> None:
     gaussian_cloud = load_checkpoint_gaussians(checkpoint_path, device=device)
     camera_path_data = load_camera_path(camera_path)
     device_label = f"{device.type}:{device.index}" if device.index is not None else device.type
-    print(f"Using device: {device_label}")
+    aiLogger.info(f"Using device: {device_label}")
     if device.type == "cuda":
-        print(f"CUDA GPU: {torch.cuda.get_device_name(device)}")
-    print(f"Rendering dense-gaussian video from {checkpoint_path.name} with {gaussian_cloud.means.shape[0]} gaussians")
+        aiLogger.info(f"CUDA GPU: {torch.cuda.get_device_name(device)}")
+    aiLogger.info(f"Rendering dense-gaussian video from {checkpoint_path.name} with {gaussian_cloud.means.shape[0]} gaussians")
     dense_output_path = derive_dense_output_path(args.output_path)
-    print(f"Camera path: {camera_path} -> {args.output_path}")
-    print(f"Dense-gaussian companion output: {dense_output_path}")
+    aiLogger.info(f"Camera path: {camera_path} -> {args.output_path}")
+    aiLogger.info(f"Dense-gaussian companion output: {dense_output_path}")
     if args.generate_images:
-        print(f"Image companion output: {derive_image_output_path(args.output_path)}")
+        aiLogger.info(f"Image companion output: {derive_image_output_path(args.output_path)}")
     if args.fps is not None:
-        print(f"Output FPS override: {args.fps}")
+        aiLogger.info(f"Output FPS override: {args.fps}")
     with torch.inference_mode():
         render_outputs(
             gaussian_cloud,

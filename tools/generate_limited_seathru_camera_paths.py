@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+from pearl.ai_logger import aiLogger
 
 from generate_seathru_camera_paths import (
     DEFAULT_FPS,
@@ -211,7 +212,7 @@ def main() -> None:
 
     for scene_dir in scene_dirs:
         output_path = generate_scene_limited_camera_path(scene_dir)
-        print(f"Wrote {output_path}")
+        aiLogger.info(f"Wrote {output_path}")
 
 
 if __name__ == "__main__":

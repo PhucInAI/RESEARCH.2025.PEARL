@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
+from pearl.ai_logger import aiLogger
 
 from generate_seathru_camera_paths import (
     colmap_image_to_camera_to_world,
@@ -435,18 +436,18 @@ def main() -> None:
     camera_path_data = load_camera_path(camera_path)
 
     device_label = f"{device.type}:{device.index}" if device.index is not None else device.type
-    print(f"Using device: {device_label}")
+    aiLogger.info(f"Using device: {device_label}")
     if device.type == "cuda":
-        print(f"CUDA GPU: {torch.cuda.get_device_name(device)}")
-    print(
+        aiLogger.info(f"CUDA GPU: {torch.cuda.get_device_name(device)}")
+    aiLogger.info(
         "Rendering sparse-to-dense progress video "
         f"with {sparse_cloud.means.shape[0]} sparse points and {dense_cloud.means.shape[0]} dense gaussians"
     )
-    print(f"Camera path: {camera_path} -> {args.output_path}")
+    aiLogger.info(f"Camera path: {camera_path} -> {args.output_path}")
     if args.generate_images:
-        print(f"Image companion output: {derive_image_output_path(args.output_path)}")
+        aiLogger.info(f"Image companion output: {derive_image_output_path(args.output_path)}")
     if args.fps is not None:
-        print(f"Output FPS override: {args.fps}")
+        aiLogger.info(f"Output FPS override: {args.fps}")
 
     with torch.inference_mode():
         render_progress_outputs(

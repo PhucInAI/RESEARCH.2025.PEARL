@@ -19,7 +19,7 @@
   </p>
 </p>
 <p align="center">
-  <img alt="PEARL reconstruction of the Curacao SeaThru-NeRF scene" src=".assets/pearl_teaser.jpg" />
+  <img alt="PEARL reconstruction of the Curacao SeaThru-NeRF scene" src="pearl_teaser.jpg" />
 </p>
 
 <p align="justify">
@@ -76,17 +76,18 @@ We follow WaterSplatting and recompute camera parameters with distortion correct
 
 ```bash
 colmap image_undistorter \
-  --image_path data/SeathruNeRF_dataset/IUI3-RedSea/images_wb \
-  --input_path data/SeathruNeRF_dataset/IUI3-RedSea/colmap/sparse/0 \
-  --output_path data/undistorted_seathrunerf_dataset/IUI3-RedSea \
+  --image_path assets/data/SeathruNeRF_dataset/IUI3-RedSea/images_wb \
+  --input_path assets/data/SeathruNeRF_dataset/IUI3-RedSea/colmap/sparse/0 \
+  --output_path assets/data/undistorted_seathrunerf_dataset/IUI3-RedSea \
   --output_type COLMAP
 ```
 
 ## Training
 
 ```bash
-ns-train pearl --vis viewer+wandb colmap --downscale-factor 1 --colmap-path sparse \
-  --data data/undistorted_seathrunerf_dataset/IUI3-RedSea --images-path images
+ns-train pearl --vis viewer+wandb --output-dir assets/outputs \
+  --data assets/data/undistorted_seathrunerf_dataset/IUI3-RedSea \
+  colmap --downscale-factor 1 --colmap-path sparse --images-path images
 ```
 
 Useful flags:
@@ -100,13 +101,13 @@ The train/test splits follow the SeaThru-NeRF protocol, not the nerfstudio defau
 ## Evaluation
 
 ```bash
-ns-eval --load-config outputs/unnamed/pearl/<timestamp>/config.yml --render-output-path renders/eval
+ns-eval --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml --render-output-path assets/renders/eval
 ```
 
 To sweep every saved checkpoint of a run and report the best one per metric:
 
 ```bash
-python scripts/eval_all_ckpts.py outputs/unnamed/pearl/<timestamp>
+python scripts/eval_all_ckpts.py assets/outputs/unnamed/pearl/<timestamp>
 ```
 
 Robustness studies from the paper (pose-noise sensitivity, medium-mismatch stress, Gaussian-budget ablation) live in
@@ -115,14 +116,14 @@ Robustness studies from the paper (pose-noise sensitivity, medium-mismatch stres
 ## Interactive Viewer
 
 ```bash
-ns-viewer --load-config outputs/unnamed/pearl/<timestamp>/config.yml
+ns-viewer --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml
 ```
 
 ## Rendering Videos
 
 ```bash
-ns-render camera-path --load-config outputs/unnamed/pearl/<timestamp>/config.yml \
-  --camera-path-filename <camera_path.json> --output-path renders/IUI3-RedSea/pearl.mp4
+ns-render camera-path --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml \
+  --camera-path-filename <camera_path.json> --output-path assets/renders/IUI3-RedSea/pearl.mp4
 ```
 
 ## Citation

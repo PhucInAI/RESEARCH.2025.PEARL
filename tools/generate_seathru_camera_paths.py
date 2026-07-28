@@ -16,6 +16,8 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from pearl.ai_logger import aiLogger
 
+DEFAULT_DATASET_ROOT = Path(__file__).resolve().parents[1] / "assets/data/undistorted_seathrunerf_dataset"
+
 
 @dataclass(frozen=True)
 class CameraModel:
@@ -70,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("data/undistorted_seathrunerf_dataset"),
+        default=DEFAULT_DATASET_ROOT,
         help="Root directory containing SeaThru scenes.",
     )
     return parser.parse_args()

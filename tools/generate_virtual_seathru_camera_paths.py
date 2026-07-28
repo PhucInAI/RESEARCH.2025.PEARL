@@ -16,6 +16,7 @@ from scipy.interpolate import CubicSpline
 from pearl.ai_logger import aiLogger
 
 from generate_seathru_camera_paths import (
+    DEFAULT_DATASET_ROOT,
     DEFAULT_FPS,
     build_viewer_camera_path,
     colmap_image_to_camera_to_world,
@@ -48,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("data/undistorted_seathrunerf_dataset"),
+        default=DEFAULT_DATASET_ROOT,
         help="Root directory containing SeaThru scenes.",
     )
     return parser.parse_args()

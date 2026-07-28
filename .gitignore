@@ -11,8 +11,8 @@
 
 # ----------------------------------------------------------------------
 # Local-only data, experiment results, references
-# /data /outputs /renders are symlinks into assets/ — no trailing
-# slash, because "name/" patterns do not match symlinks
+# /data /outputs /renders guard against nerfstudio defaults recreating
+# these dirs at the root — all I/O belongs under assets/
 # ----------------------------------------------------------------------
 /assets/
 /data

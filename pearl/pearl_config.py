@@ -1,3 +1,6 @@
+"""Nerfstudio method specifications for PEARL"""
+
+
 from nerfstudio.engine.trainer import TrainerConfig
 from nerfstudio.plugins.types import MethodSpecification
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
@@ -9,7 +12,11 @@ from nerfstudio.configs.base_config import ViewerConfig
 from pearl.pearl import PearlModelConfig
 
 NUM_STEPS = 30000
-# Base method configuration
+
+
+# ========================================================================
+# Base method: ns-train pearl
+# ========================================================================
 pearl_method = MethodSpecification(
     config=TrainerConfig(
         method_name="pearl",
@@ -69,15 +76,12 @@ pearl_method = MethodSpecification(
                     max_steps=NUM_STEPS,
                 ),
             },
-            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15),
-                      "scheduler": ExponentialDecaySchedulerConfig(
+            "quats": {
+                "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(
                     lr_final=0.001,
                     max_steps=NUM_STEPS,
                 ),
-            },
-            "camera_opt": {
-                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(lr_final=5e-5, max_steps=NUM_STEPS),
             },
             "medium_mlp": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
@@ -85,7 +89,7 @@ pearl_method = MethodSpecification(
                     lr_final=1.5e-4, max_steps=NUM_STEPS,
                 ),
             },
-            #            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
+            # Depth attenuation coefficients: low LR to avoid instability.
             "attenuation_coeff": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": ExponentialDecaySchedulerConfig(
@@ -99,6 +103,10 @@ pearl_method = MethodSpecification(
     description="PEARL (Photometric-Error and Attenuation-Regularized Learning) for underwater scenes.",
 )
 
+
+# ========================================================================
+# Big variant: ns-train pearl-big
+# ========================================================================
 pearl_method_big = MethodSpecification(
     config=TrainerConfig(
         method_name="pearl-big",
@@ -143,19 +151,17 @@ pearl_method_big = MethodSpecification(
                 "optimizer": AdamOptimizerConfig(lr=0.005, eps=1e-15),
                 "scheduler": None,
             },
-            "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None},
-            "camera_opt": {
-                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
-                "scheduler": ExponentialDecaySchedulerConfig(
-                    lr_final=5e-5, max_steps=NUM_STEPS,
-                    ),
+            "quats": {
+                "optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15),
+                "scheduler": None,
             },
             "medium_mlp": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=0.001),
                 "scheduler": ExponentialDecaySchedulerConfig(
                     lr_final=1.5e-4, max_steps=NUM_STEPS,
                 ),
-            },            # Optimize depth attenuation coefficients if enabled. Low LR to avoid instability.
+            },
+            # Depth attenuation coefficients: low LR to avoid instability.
             "attenuation_coeff": {
                 "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
                 "scheduler": ExponentialDecaySchedulerConfig(

@@ -1,5 +1,7 @@
 # ruff: noqa: E741
-# Copyright 2024 Huapeng Li, Wenxuan Song, Tianao Xu, Alexandre Elsig and Jonas KulhanekS. All rights reserved.
+# Copyright 2024 Huapeng Li, Wenxuan Song, Tianao Xu, Alexandre Elsig and Jonas Kulhanek
+# (WaterSplatting). All rights reserved.
+# PEARL modifications Copyright 2026 Thanh-Phuc Nguyen et al.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Python package for combining 3DGS with volume rendering to enable water/fog modeling.
-"""
+"""PEARL model: budgeted residual-driven densification and medium-consistent supervision for underwater 3DGS"""
 
 from __future__ import annotations
 
@@ -43,16 +43,18 @@ from nerfstudio.engine.optimizers import Optimizers
 
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils.colors import get_color
-from nerfstudio.utils.rich_utils import CONSOLE
 
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.encodings import SHEncoding
 
+from .ai_logger import aiLogger
 
+
+# ========================================================================
+# Module helpers
+# ========================================================================
 def random_quat_tensor(N):
-    """
-    Defines a random quaternion tensor of shape (N, 4)
-    """
+    """Define a random quaternion tensor of shape (N, 4)"""
     u = torch.rand(N)
     v = torch.rand(N)
     w = torch.rand(N)
@@ -68,24 +70,27 @@ def random_quat_tensor(N):
 
 
 def RGB2SH(rgb):
-    """
-    Converts from RGB values [0,1] to the 0th spherical harmonic coefficient
-    """
+    """Convert from RGB values [0,1] to the 0th spherical harmonic coefficient"""
     C0 = 0.28209479177387814
     return (rgb - 0.5) / C0
 
 
 def SH2RGB(sh):
-    """
-    Converts from the 0th spherical harmonic coefficient to RGB values [0,1]
-    """
+    """Convert from the 0th spherical harmonic coefficient to RGB values [0,1]"""
     C0 = 0.28209479177387814
     return sh * C0 + 0.5
 
 
+# ========================================================================
+# PEARL model config
+# ========================================================================
 @dataclass
 class PearlModelConfig(ModelConfig):
-    """PEARL model config."""
+    """PEARL model config
+
+    Note: several fields are read in the model via getattr(self.config, name, default)
+    so that run configs saved before a field existed remain evaluable with ns-eval.
+    """
 
     _target: Type = field(default_factory=lambda: PearlModel)
     num_steps: int = 15000
@@ -168,23 +173,23 @@ class PearlModelConfig(ModelConfig):
     """Type of MLP to use for medium MLP."""
 
     # ------------------------------------------------------------------
-    # PEARL modules (independent toggles)
+    # PEARL principle toggles (independent)
     # ------------------------------------------------------------------
 
     enable_error_densification: bool = True
-    """Module-1: use per-Gaussian photometric error (from image residuals) to guide densification."""
+    """Principle A (Eq. 12-15): use per-Gaussian photometric error (residual attribution) to guide densification."""
 
     enable_budget_aware_split: bool = True
-    """Module-2: enable budget-aware densification (max_gaussians cap) and optional steepest-direction splitting."""
+    """Principle A (Eq. 16-19): budgeted densification under the max_gaussians cap and optional principal-axis splitting."""
 
     enable_complexity_init: bool = True
-    """Module-3: enable complexity-based / depth-guided extra Gaussian seeding at initialization."""
+    """Principle A (Eq. 22-24): complexity-based / depth-guided extra Gaussian seeding at initialization."""
 
     enable_edge_loss: bool = True
-    """Module-4: enable edge-aware image loss weighting (edge-preserving supervision)."""
+    """Principle B (Eq. 28-29): edge-aware image loss reweighting (edge-preserving supervision)."""
 
     enable_depth_attenuation: bool = True
-    """Module-5: enable depth-dependent color attenuation on object colors (RGB Beer-Lambert style)."""
+    """Principle B (Eq. 7-8): depth-dependent Beer-Lambert color attenuation on object colors."""
 
     # ---- Training schedules ----
     depth_attenuation_warmup_steps: int = 2000
@@ -193,26 +198,20 @@ class PearlModelConfig(ModelConfig):
     edge_loss_warmup_steps: int = 2000
     """Linearly ramp edge_loss_weight from 0 to its configured value over this many steps."""
 
-    densify_error_warmup_steps: int = 2000
-    """Linearly anneal effective densify_error_thresh from 2× to 1× its value over this many steps."""
-
-    # ------------------------------------------------------------------
-    # New configuration parameters for research-based improvements
-    #
-    densify_error_thresh: float = 0.0020
-    """Threshold on per‑Gaussian photometric error for densification. Error above this triggers splits/dups."""
-
     max_gaussians: Optional[int] = 1000000
-    """Maximum allowed number of Gaussians N_max. Density control projects split/dup operations to satisfy the cap (Eq. 15) and prunes by utility if still above the cap (Eq. 17)."""
+    """Maximum allowed number of Gaussians N_max. Density control selects the largest feasible split/dup prefix under the cap (Eq. 16-17) and prunes by utility if still above it (Eq. 19)."""
 
     edge_loss_weight: float = 0.05
-    """Weight for edge‑aware loss; if >0, errors near edges are upweighted by (1 + edge_loss_weight * gradient magnitude)."""
+    """Weight for edge-aware loss; if >0, errors near edges are upweighted by (1 + edge_loss_weight * gradient magnitude)."""
 
-    use_depth_attenuation: bool = True
-    """If True, apply a depth‑dependent color attenuation model to object colors before rasterization."""
+    attenuation_coeff_init: Tuple[float, float, float] = (0.541, 0.541, 0.541)
+    """Initial attenuation coefficients (R,G,B) for depth-dependent color attenuation. Only used if enable_depth_attenuation=True."""
 
-    attenuation_coeff_init: Tuple[float, float, float] = (0.541,0.541,0.541)
-    """Initial attenuation coefficients (R,G,B) for depth‑dependent color attenuation. Only used if use_depth_attenuation=True."""
+    medium_chunk_size: int = 65536
+    """Number of ray directions per chunk in the medium MLP forward pass (memory control)."""
+
+    eval_use_autocast: bool = True
+    """If True, run the eval-time medium MLP forward under CUDA autocast."""
 
     # Complexity-based / depth-guided initialization
     complexity_init_factor: float = 0.0
@@ -239,23 +238,23 @@ class PearlModelConfig(ModelConfig):
     """
 
     # ------------------------------------------------------------------
-    # Principle A: hard-budget density control (Eq. 11-17)
+    # Principle A: hard-budget density control (Eq. 12-21)
     # ------------------------------------------------------------------
 
     densify_h_thresh: float = 0.0008
-    """Threshold on densification score h_i (Eq. 13) to form split/dup candidates (Eq. 16).
+    """Threshold on densification score h_i (Eq. 15) to form split/dup candidates (Eq. 18).
 
     Practical note: set this on the same scale as densify_grad_thresh; by default we mirror the 3DGS gradient threshold.
     """
 
     lambda_E: float = 1.0
-    """λ_E in Eq. (13), controlling how strongly persistent error biases densification."""
+    """λ_E in Eq. (15), controlling how strongly persistent error biases densification."""
 
     lambda_U: float = 1.0
-    """λ_U in Eq. (17), controlling how strongly persistent error biases utility pruning when above N_max."""
+    """λ_U in Eq. (19), controlling how strongly persistent error biases utility pruning when above N_max."""
 
     error_ema_eta: float = 0.95
-    """EMA coefficient η for persistent error (Eq. 12). Larger = slower updates."""
+    """EMA coefficient η for persistent error (Eq. 14). Larger = slower updates."""
 
     error_attr_every: int = 5
     """Update residual-attributed error stats every this many training steps (performance control)."""
@@ -270,14 +269,14 @@ class PearlModelConfig(ModelConfig):
     """Ignore very small per-pixel alpha contributions when attributing residuals."""
 
     # ------------------------------------------------------------------
-    # Principle B: medium-consistent supervision (Eq. 24-28)
+    # Principle B: medium-consistent supervision (Eq. 25-32)
     # ------------------------------------------------------------------
 
     enable_attn_regularization: bool = True
     """If True, apply attenuation regularization L_attn (magnitude/smoothness/ordering)."""
 
     attn_loss_weight: float = 0.01
-    """λ_attn in Eq. (28)."""
+    """λ_attn in Eq. (32)."""
 
     attn_prior_beta: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     """Weak prior β_0 (dataset mean) in L_attn-mag."""
@@ -287,7 +286,9 @@ class PearlModelConfig(ModelConfig):
     attn_lambda_ord: float = 1.0
 
 
-
+# ========================================================================
+# PEARL model
+# ========================================================================
 class PearlModel(Model):
     """
     Args:
@@ -296,6 +297,9 @@ class PearlModel(Model):
 
     config: PearlModelConfig
 
+    # --------------------------------------------------------------------
+    # Setup
+    # --------------------------------------------------------------------
     def __init__(
         self,
         *args,
@@ -444,7 +448,7 @@ class PearlModel(Model):
                 shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
                 shs[:, 1:, 3:] = 0.0
             else:
-                CONSOLE.log("use color only optimization with sigmoid activation")
+                aiLogger.info("use color only optimization with sigmoid activation")
                 shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
             features_dc = torch.nn.Parameter(shs[:, 0, :])
             features_rest = torch.nn.Parameter(shs[:, 1:, :])
@@ -464,12 +468,12 @@ class PearlModel(Model):
             }
         )
         # Initialize depth attenuation coefficients (always created to keep optimizer groups stable).
-        # If depth attenuation is disabled (Module-5 off), we do not apply it in rendering.
+        # If depth attenuation is disabled, we do not apply it in rendering.
         init_coeffs = torch.tensor(
             self.config.attenuation_coeff_init, dtype=torch.float32
         )
         # Always register attenuation_coeff as a Parameter so the optimizer group is never empty.
-        # When depth attenuation is disabled (Module-5 off), this parameter is simply unused in rendering
+        # When depth attenuation is disabled, this parameter is simply unused in rendering
         # and will therefore receive no gradients.
         self.attenuation_coeff = torch.nn.Parameter(init_coeffs)
 
@@ -490,6 +494,9 @@ class PearlModel(Model):
         else:
             self.background_color = get_color(self.config.background_color)
 
+    # --------------------------------------------------------------------
+    # Gaussian properties
+    # --------------------------------------------------------------------
     @property
     def colors(self):
         if self.config.sh_degree > 0:
@@ -539,6 +546,9 @@ class PearlModel(Model):
     # the Gaussian parameter set. Leaving them as regular attributes
     # allows them to be optimized separately and referenced directly.
 
+    # --------------------------------------------------------------------
+    # Checkpoint loading and k-NN
+    # --------------------------------------------------------------------
     def load_state_dict(self, dict, **kwargs):  # type: ignore
         # resize the parameters to match the new number of points
         self.step = self.config.num_steps
@@ -555,11 +565,7 @@ class PearlModel(Model):
         super().load_state_dict(dict, **kwargs)
 
     def k_nearest_sklearn(self, x: torch.Tensor, k: int):
-        """
-            Find k-nearest neighbors using sklearn's NearestNeighbors.
-        x: The data tensor of shape [num_samples, num_features]
-        k: The number of neighbors to retrieve
-        """
+        """Find the k nearest neighbors of each row of x with sklearn"""
         # Convert tensor to numpy array
         x_np = x.cpu().numpy()
 
@@ -574,11 +580,12 @@ class PearlModel(Model):
         # Exclude the point itself from the result and return
         return distances[:, 1:].astype(np.float32), indices[:, 1:].astype(np.float32)
 
+    # --------------------------------------------------------------------
+    # Optimizer bookkeeping
+    # --------------------------------------------------------------------
     def remove_from_optim(self, optimizer, deleted_mask, new_params):
-        """removes the deleted_mask from the optimizer provided"""
+        """Remove the deleted_mask entries from the optimizer state"""
         assert len(new_params) == 1
-        # assert isinstance(optimizer, torch.optim.Adam), "Only works with Adam"
-
         param = optimizer.param_groups[0]["params"][0]
         param_state = optimizer.state[param]
         del optimizer.state[param]
@@ -600,7 +607,7 @@ class PearlModel(Model):
             self.remove_from_optim(optimizers.optimizers[group], deleted_mask, param)
 
     def dup_in_optim(self, optimizer, dup_mask, new_params, n=2):
-        """adds the parameters to the optimizer"""
+        """Add duplicated parameters to the optimizer state"""
         param = optimizer.param_groups[0]["params"][0]
         param_state = optimizer.state[param]
         if "exp_avg" in param_state:
@@ -629,11 +636,12 @@ class PearlModel(Model):
         for group, param in param_groups.items():
             self.dup_in_optim(optimizers.optimizers[group], dup_mask, param, n)
 
+    # --------------------------------------------------------------------
+    # Training statistics and scene state
+    # --------------------------------------------------------------------
     def after_train(self, step: int):
+        """Accumulate screen-space gradient and size statistics after each step"""
         assert step == self.step
-        # to save some training time, we no longer need to update those stats post refinement
-        # if self.step >= self.config.stop_split_at:
-        #     return
         with torch.no_grad():
             # keep track of a moving average of grad norms
             visible_mask = (self.radii > 0).flatten()
@@ -643,7 +651,6 @@ class PearlModel(Model):
             else:
                 assert self.xys.grad is not None
                 grads = self.xys.grad.detach().norm(dim=-1)
-            # print(f"grad norm min {grads.min().item()} max {grads.max().item()} mean {grads.mean().item()} size {grads.shape}")
             if self.xys_grad_norm is None:
                 self.xys_grad_norm = grads
                 self.depths_accum = self.depths
@@ -670,8 +677,11 @@ class PearlModel(Model):
         assert background_color.shape == (3,)
         self.background_color = background_color
 
+    # --------------------------------------------------------------------
+    # Principle B: attenuation regularization (L_attn)
+    # --------------------------------------------------------------------
     def _attenuation_regularization(self, beta: torch.Tensor) -> torch.Tensor:
-        """Attenuation regularization (page 7): L_attn-mag + L_attn-smooth + L_attn-ord.
+        """Compute L_attn = magnitude + smoothness + ordering terms
 
         Note: The paper defines smoothness on a viewing-sphere neighborhood. Here we use an image-grid neighborhood
         over the discretized ray directions (equivalent to a local neighborhood in direction space for small FoV).
@@ -698,12 +708,12 @@ class PearlModel(Model):
         return lam_beta * l_mag + lam_smooth * l_smooth + lam_ord * l_ord
 
 
+    # --------------------------------------------------------------------
+    # Principle A: residual attribution (Eq. 12-14)
+    # --------------------------------------------------------------------
     @torch.no_grad()
     def _update_gaussian_error_ema(self, err_img: torch.Tensor) -> None:
-        """Update per-Gaussian error EMA using residual attribution (Eq. 11-12).
-
-        err_img: (H,W) scalar L1 residual per pixel.
-        """
+        """Update the per-Gaussian error EMA from the (H,W) L1 residual image"""
         if self._proj_conics is None or self._proj_depths is None or self._proj_opacity is None or self._proj_num_tiles_hit is None:
             return
         if self._proj_block_width is None or self._proj_hw is None:
@@ -822,7 +832,11 @@ class PearlModel(Model):
         self.gaussian_error_ema[mask] = eta * self.gaussian_error_ema[mask] + (1.0 - eta) * E_inst[mask]
 
 
+    # --------------------------------------------------------------------
+    # Principle A: budgeted densification (Algorithm 2)
+    # --------------------------------------------------------------------
     def refinement_after(self, optimizers: Optimizers, step):
+        """Run one density-control round: score, split/dup under budget, cull"""
         assert step == self.step
         if self.step <= self.config.warmup_length:
             return
@@ -859,11 +873,11 @@ class PearlModel(Model):
                 active = (self.vis_counts > 0).squeeze()
                 Ebar_mean = Ebar[active].mean() if bool(active.any()) else Ebar.mean()
 
-                # Densification score h_i (Eq. 13): combines activity and persistent error
+                # Densification score h_i (Eq. 15): combines activity and persistent error
                 lamE = float(getattr(self.config, 'lambda_E', 1.0))
                 h_i = g_i * (1.0 + lamE * (Ebar / (Ebar_mean + 1e-6)))
 
-                # Candidate sets (Eq. 16)
+                # Candidate sets (Eq. 18)
                 s1 = torch.exp(self.scales).max(dim=-1).values.squeeze()
                 h_mask = h_i > float(getattr(self.config, 'densify_h_thresh', self.config.densify_grad_thresh))
 
@@ -872,7 +886,7 @@ class PearlModel(Model):
                 if self.step < self.config.stop_screen_size_at:
                     splits = splits | ((self.max_2Dsize > self.config.split_screen_size).squeeze() & h_mask)
 
-                # Budget projection (Eq. 15): sort by h_i and take largest feasible prefix
+                # Budget projection (Eq. 16-17): sort by h_i and take largest feasible prefix
                 nsamps = int(self.config.n_split_samples)
                 if self.config.enable_budget_aware_split and self.config.max_gaussians is not None:
                     budget = max(0, int(self.config.max_gaussians) - int(self.num_points))
@@ -947,7 +961,7 @@ class PearlModel(Model):
                 )
                 deleted_masks.append(self.cull_gaussians(splits_mask))
 
-                # Budget-aware pruning (Eq. 17) if still above cap after standard pruning
+                # Budget-aware pruning (Eq. 19) if still above cap after standard pruning
                 if self.config.enable_budget_aware_split and self.config.max_gaussians is not None and self.num_points > int(self.config.max_gaussians):
                     k_remove = int(self.num_points - int(self.config.max_gaussians))
                     Ebar2 = self.gaussian_error_ema if self.gaussian_error_ema is not None else torch.zeros((self.num_points,), device=self.device)
@@ -1003,10 +1017,7 @@ class PearlModel(Model):
             self.max_2Dsize = None
 
     def cull_gaussians(self, extra_cull_mask: Optional[torch.Tensor] = None):
-        """
-        This function deletes gaussians with under a certain opacity threshold
-        extra_cull_mask: a mask indicates extra gaussians to cull besides existing culling criterion
-        """
+        """Delete gaussians below the opacity threshold plus any extra mask"""
         n_bef = self.num_points
         # cull transparent ones
         if self.step < self.config.stop_split_at:
@@ -1036,7 +1047,7 @@ class PearlModel(Model):
         if self.gaussian_activity is not None:
             self.gaussian_activity = self.gaussian_activity[~culls]
 
-        CONSOLE.log(
+        aiLogger.info(
             f"Culled {n_bef - self.num_points} gaussians "
             f"({below_alpha_count} below alpha thresh, {toobigs_count} too bigs, {self.num_points} remaining)"
         )
@@ -1044,15 +1055,9 @@ class PearlModel(Model):
         return culls
 
     def split_gaussians(self, split_mask: torch.Tensor, samps: int):
-        """
-        Split Gaussians that are too large.
-
-        If Module-2 is enabled and config.use_steepest_split is True, we split along the principal axis
-        (largest scale in world space). Otherwise we fall back to the original
-        random-direction splitting.
-        """
+        """Split large gaussians, along the principal axis when use_steepest_split is set (Eq. 20-21)"""
         n_splits = int(split_mask.sum().item())
-        CONSOLE.log(
+        aiLogger.info(
             f"Splitting {n_splits}/{self.num_points} gaussians "
             f"({split_mask.sum().item() / max(self.num_points, 1):.4f})"
         )
@@ -1145,16 +1150,17 @@ class PearlModel(Model):
 
 
     def dup_gaussians(self, dup_mask):
-        """
-        This function duplicates gaussians that are too small
-        """
+        """Duplicate small gaussians selected for densification"""
         n_dups = dup_mask.sum().item()
-        CONSOLE.log(f"Duplicating {dup_mask.sum().item()/self.num_points} gaussians: {n_dups}/{self.num_points}")
+        aiLogger.info(f"Duplicating {dup_mask.sum().item()/self.num_points} gaussians: {n_dups}/{self.num_points}")
         new_dups = {}
         for name, param in self.gauss_params.items():
             new_dups[name] = param[dup_mask]
         return new_dups
 
+    # --------------------------------------------------------------------
+    # Training callbacks
+    # --------------------------------------------------------------------
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
@@ -1180,6 +1186,9 @@ class PearlModel(Model):
     def step_cb(self, step):
         self.step = step
 
+    # --------------------------------------------------------------------
+    # Optimizer param groups
+    # --------------------------------------------------------------------
     def get_gaussian_param_groups(self) -> Dict[str, List[Parameter]]:
         # Here we explicitly use the means, scales as parameters so that the user can override this function and
         # specify more if they want to add more optimizable params to gaussians.
@@ -1195,7 +1204,7 @@ class PearlModel(Model):
 
         # SH direction encoding has no trainable parameters in the tcnn implementation; do not register an optimizer group.
 
-        # Always expose attenuation_coeff as a group; when Module-5 is disabled it is unused and thus gets no grads.
+        # Always expose attenuation_coeff as a group; when depth attenuation is disabled it is unused and thus gets no grads.
         gps["attenuation_coeff"] = [self.attenuation_coeff]
 
         # Drop any empty groups defensively (prevents torch optimizer errors).
@@ -1207,6 +1216,9 @@ class PearlModel(Model):
         return gps
 
 
+    # --------------------------------------------------------------------
+    # Rendering
+    # --------------------------------------------------------------------
     def _get_downscale_factor(self):
         if self.training:
             return 2 ** max(
@@ -1228,17 +1240,9 @@ class PearlModel(Model):
         return image
 
     def get_outputs(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, Union[torch.Tensor, List]]:
-        """Takes in a Ray Bundle and returns a dictionary of outputs.
-
-        Args:
-            ray_bundle: Input bundle of rays. This raybundle should have all the
-            needed information to compute the outputs.
-
-        Returns:
-            Outputs of model. (ie. rendered colors)
-        """
+        """Render the underwater scene for a single camera and return the output images"""
         if not isinstance(camera, Cameras):
-            print("Called get_outputs with not a camera")
+            aiLogger.warning("Called get_outputs with not a camera")
             return {}
         assert camera.shape[0] == 1, "Only one camera at a time"
 
@@ -1264,45 +1268,9 @@ class PearlModel(Model):
         self.last_fx = camera.fx.item()
         self.last_fy = camera.fy.item()
 
-        # Medium
-        # Encode directions
-        # y = torch.linspace(0., H, H, device=self.device)
-        # x = torch.linspace(0., W, W, device=self.device)
-        # yy, xx = torch.meshgrid(y, x)
-        # yy = (yy - cy) / camera.fy.item()
-        # xx = (xx - cx) / camera.fx.item()
-        # directions = torch.stack([xx, yy, torch.ones_like(xx)], dim=-1)
-        # norms = torch.linalg.norm(directions, dim=-1, keepdim=True)
-        # directions = directions / norms
+        # Medium MLP forward on encoded, world-space ray directions (Eq. 30-31), chunked to bound memory
         directions = self._get_dirs_cam_unit(H, W, camera.fx.item(), camera.fy.item(), cx, cy, device=self.device, dtype=R.dtype)
         directions = directions @ R.T
-
-        # directions_flat = directions.view(-1, 3)
-        # directions_encoded = self.direction_encoding(directions_flat)
-        # outputs_shape = directions.shape[:-1]
-
-        # # Medium MLP forward pass
-        # if self.config.mlp_type == "tcnn":
-        #     medium_base_out = self.medium_mlp(directions_encoded)
-        # else:
-        #     medium_base_out = self.medium_mlp(directions_encoded.float())
-
-        # # different activations for different outputs
-        # medium_rgb = (
-        #     self.colour_activation(medium_base_out[..., :3])
-        #     .view(*outputs_shape, -1)
-        #     .to(directions)
-        # )
-        # medium_bs = (
-        #     self.sigma_activation(medium_base_out[..., 3:6] + self.medium_density_bias)
-        #     .view(*outputs_shape, -1)
-        #     .to(directions)
-        # )
-        # medium_attn = (
-        #     self.sigma_activation(medium_base_out[..., 6:] + self.medium_density_bias)
-        #     .view(*outputs_shape, -1)
-        #     .to(directions)
-        # )
 
         outputs_shape = directions.shape[:-1]
         flat = directions.reshape(-1, 3)
@@ -1432,11 +1400,10 @@ class PearlModel(Model):
         else:
             rgbs = torch.sigmoid(colors_crop[:, 0, :])
         # Optional global scaling of the direction-conditioned attenuation field β(v).
-        # This keeps the model aligned with Eq. (25) while allowing a conservative warmup.
+        # This keeps the model aligned with Beer-Lambert attenuation (Eq. 7-8) while allowing a conservative warmup.
         medium_attn_eff = medium_attn
         apply_depth_attn = (
             self.config.enable_depth_attenuation
-            and self.config.use_depth_attenuation
             and self.attenuation_coeff is not None
             and (not self.training or self.step >= self.config.depth_attenuation_warmup_steps)
         )
@@ -1492,37 +1459,25 @@ class PearlModel(Model):
                 "rgb_object": rgb_object, "rgb_clear": rgb_clear, "rgb_clear_clamp": rgb_clear_clamp, "rgb_medium": rgb_medium, "pred_image": rgb,
                 "medium_rgb": medium_rgb, "medium_bs": medium_bs, "medium_attn": medium_attn_eff, "medium_attn_raw": medium_attn}  # type: ignore
 
+    # --------------------------------------------------------------------
+    # Losses and metrics
+    # --------------------------------------------------------------------
     def get_gt_img(self, image: torch.Tensor):
-        """Compute groundtruth image with iteration dependent downscale factor for evaluation purpose
-
-        Args:
-            image: tensor.Tensor in type uint8 or float32
-        """
+        """Return the ground-truth image at the iteration-dependent downscale factor"""
         if image.dtype == torch.uint8:
             image = image.float() / 255.0
         gt_img = self._downscale_if_required(image)
         return gt_img.to(self.device)
 
     def composite_with_background(self, image, background) -> torch.Tensor:
-        """Composite the ground truth image with a background color when it has an alpha channel.
-
-        Args:
-            image: the image to composite
-            background: the background color
-        """
+        """Drop the alpha channel of the ground-truth image when present"""
         if image.shape[2] == 4:
-            # alpha = image[..., -1].unsqueeze(-1).repeat((1, 1, 3))
             return image[..., :3]
         else:
             return image
 
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
-        """Compute and returns metrics.
-
-        Args:
-            outputs: the output to compute loss dict to
-            batch: ground truth batch corresponding to outputs
-        """
+        """Compute training metrics (PSNR, gaussian count, medium channel means)"""
         gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
         metrics_dict = {}
         predicted_rgb = outputs["pred_image"]
@@ -1538,13 +1493,7 @@ class PearlModel(Model):
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
-        """Computes and returns the losses dict.
-
-        Args:
-            outputs: the output to compute loss dict to
-            batch: ground truth batch corresponding to outputs
-            metrics_dict: dictionary of metrics, some of which we can use for loss
-        """
+        """Compute L_total = L_img + edge-aware loss + attenuation regularization (Eq. 32)"""
         gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
         pred_img = outputs["pred_image"]
 
@@ -1571,7 +1520,7 @@ class PearlModel(Model):
         else:
             per_pixel_error = ((pred_img - gt_img) / (pred_img.detach() + 1e-3)) ** 2
             recon_loss = per_pixel_error.mean()
-        # Edge-aware reweighting (Eq. 23-24): use Sobel magnitude on grayscale GT, normalized to [0,1].
+        # Edge-aware reweighting (Eq. 28-29): use Sobel magnitude on grayscale GT, normalized to [0,1].
         per_pixel_l1 = torch.abs(gt_img - pred_img).mean(dim=-1)  # (H,W)
         edge_loss = gt_img.new_tensor(0.0)
         effective_edge_weight = 0.0
@@ -1618,7 +1567,7 @@ class PearlModel(Model):
             )
         base_loss = (1 - self.config.ssim_lambda) * recon_loss + self.config.ssim_lambda * simloss
 
-        # Attenuation regularization (Eq. 28 with attenuation terms)
+        # Attenuation regularization L_attn (Eq. 32)
         attn_reg = gt_img.new_tensor(0.0)
         if bool(getattr(self.config, 'enable_attn_regularization', True)) and float(getattr(self.config, 'attn_loss_weight', 0.0)) > 0.0:
             beta = outputs.get('medium_attn', None)
@@ -1627,14 +1576,14 @@ class PearlModel(Model):
 
         main_loss = base_loss + effective_edge_weight * edge_loss + float(getattr(self.config, 'attn_loss_weight', 0.0)) * attn_reg
 
-        # Update per-Gaussian persistent error stats (Eq. 11-12) for error-driven densification.
+        # Update per-Gaussian persistent error stats (Eq. 12-14) for error-driven densification.
         if self.training and self.config.enable_error_densification:
             try:
                 every = int(getattr(self.config, 'error_attr_every', 1))
                 if every <= 1 or (self.step % every == 0):
                     self._update_gaussian_error_ema(per_pixel_l1.detach())
-            except Exception:
-                pass
+            except RuntimeError as exc:
+                aiLogger.warning(f"error-EMA update skipped at step {self.step}: {exc}")
 
         return {
             'main_loss': main_loss,
@@ -1644,14 +1593,12 @@ class PearlModel(Model):
             'attn_reg': attn_reg,
         }
 
+    # --------------------------------------------------------------------
+    # Evaluation outputs
+    # --------------------------------------------------------------------
     @torch.no_grad()
     def get_outputs_for_camera(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, torch.Tensor]:
-        """Takes in a camera, generates the raybundle, and computes the output of the model.
-        Overridden for a camera-based gaussian model.
-
-        Args:
-            camera: generates raybundle
-        """
+        """Render model outputs for a camera without gradients"""
         assert camera is not None, "must provide camera to gaussian model"
         self.set_crop(obb_box)
         outs = self.get_outputs(camera.to(self.device), obb_box=obb_box)
@@ -1660,31 +1607,12 @@ class PearlModel(Model):
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        """Writes the test image outputs.
-
-        Args:
-            image_idx: Index of the image.
-            step: Current step.
-            batch: Batch of data.
-            outputs: Outputs of the model.
-
-        Returns:
-            A dictionary of metrics.
-        """
+        """Compute eval metrics (PSNR/SSIM/LPIPS) and the test image outputs"""
         gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
 
         predicted_rgb = outputs["pred_image"]
         predicted_rgb = torch.clamp(predicted_rgb, 0.0, 1.0)
 
-        # d = self._get_downscale_factor()
-        # if d > 1:
-        #     # torchvision can be slow to import, so we do it lazily.
-        #     import torchvision.transforms.functional as TF
-
-        #     newsize = [batch["image"].shape[0] // d, batch["image"].shape[1] // d]
-        #     predicted_rgb = TF.resize(predicted_rgb.permute(2, 0, 1), newsize, antialias=None).permute(1, 2, 0)
-        # else:
-        #     predicted_rgb = predicted_rgb
         # --- Robust eval resizing ---
         # GT and rendered images must have identical H,W for TorchMetrics (PSNR/SSIM/LPIPS).
         # Some pipelines may provide downscaled GT images but full-res cameras.
@@ -1726,12 +1654,4 @@ class PearlModel(Model):
         metrics_dict["lpips"] = float(lpips)
 
         images_dict = {"gt": output_gt_rgb, "rgb_medium": outputs["rgb_medium"], "rgb_object": outputs["rgb_object"], "depth": outputs["depth"], "rgb": outputs["rgb"], "rgb_clear": outputs["rgb_clear"]}
-        # images_dict = {
-        #     "gt": output_gt_rgb,
-        #     "rgb_medium": outputs["rgb_medium"].detach().cpu(),
-        #     "rgb_object": outputs["rgb_object"].detach().cpu(),
-        #     "depth": outputs["depth"].detach().cpu(),
-        #     "rgb": outputs["rgb"].detach().cpu(),
-        #     "rgb_clear": outputs["rgb_clear"].detach().cpu(),
-        # }
         return metrics_dict, images_dict

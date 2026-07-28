@@ -1,3 +1,0 @@
-[submodule "water_splatting/cuda/csrc/third_party/glm"]
-	path = water_splatting/cuda/csrc/third_party/glm
-	url = https://github.com/g-truc/glm.git

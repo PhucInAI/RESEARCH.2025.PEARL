@@ -1,5 +1,11 @@
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RESULTS_DIR = REPO_ROOT / "assets" / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- data (Curacao, SeaThru-NeRF) ---
 budgets = np.array([10_000, 20_000, 50_000, 100_000, 200_000, 1_000_000, 10_000_000], dtype=float)
@@ -44,9 +50,9 @@ def plot_curve(y, ylabel, out_pdf, lower_is_better=False):
         ax.set_title("lower is better", pad=2.0)
     fig.tight_layout(pad=0.2)
     fig.savefig(out_pdf, bbox_inches="tight")
-    fig.savefig(out_pdf.replace(".pdf", ".png"), bbox_inches="tight")
+    fig.savefig(out_pdf.with_suffix(".png"), bbox_inches="tight")
     plt.close(fig)
 
-plot_curve(psnr,  "PSNR (dB)", "ablation_budget_psnr.pdf")
-plot_curve(ssim,  "SSIM",      "ablation_budget_ssim.pdf")
-plot_curve(lpips, "LPIPS",     "ablation_budget_lpips.pdf", lower_is_better=True)
+plot_curve(psnr,  "PSNR (dB)", RESULTS_DIR / "ablation_budget_psnr.pdf")
+plot_curve(ssim,  "SSIM",      RESULTS_DIR / "ablation_budget_ssim.pdf")
+plot_curve(lpips, "LPIPS",     RESULTS_DIR / "ablation_budget_lpips.pdf", lower_is_better=True)

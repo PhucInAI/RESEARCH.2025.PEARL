@@ -4,14 +4,19 @@
 # - PEARL curve capped below N_max
 # - dashed horizontal line at N_max
 #
-# Output: budget_control_Nmax.png
+# Output: assets/figures/budget_control_Nmax.png
+
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+FIGURES_DIR = Path(__file__).resolve().parents[1] / "assets" / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def make_budget_control_icon(
-    out_path="budget_control_Nmax.png",
+    out_path=FIGURES_DIR / "budget_control_Nmax.png",
     Nmax=50000,
     T=15000,
     steps=300,
@@ -71,7 +76,7 @@ def make_budget_control_icon(
 
 if __name__ == "__main__":
     make_budget_control_icon(
-        out_path="budget_control_Nmax.png",
+        out_path=FIGURES_DIR / "budget_control_Nmax.png",
         Nmax=50000,
         T=15000,
         show_baseline=True,

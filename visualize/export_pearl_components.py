@@ -5,9 +5,13 @@
 import argparse
 import os
 import csv
+from pathlib import Path
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
+
+FIGURES_DIR = Path(__file__).resolve().parents[1] / "assets" / "figures"
 
 
 # -----------------------------
@@ -159,7 +163,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_image", required=True, help="Reference/GT image (same view as prediction)")
     ap.add_argument("--pred_image", required=True, help="Rendered prediction image")
-    ap.add_argument("--out_dir", default="pearl_assets", help="Output directory for draw.io assets")
+    ap.add_argument("--out_dir", default=str(FIGURES_DIR / "pearl_assets"), help="Output directory for draw.io assets")
     ap.add_argument("--residual_mode", default="l2", choices=["l2", "l1"], help="Residual type")
     args = ap.parse_args()
 

@@ -1,8 +1,13 @@
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 
+FIGURES_DIR = Path(__file__).resolve().parents[1] / "assets" / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
 def make_attenuation_strip(
-    out_path="attenuation_strip_rgb.png",
+    out_path=FIGURES_DIR / "attenuation_strip_rgb.png",
     W=1200, H=360,
     beta=(2.2, 1.2, 0.6),   # relative attenuation strengths for (R,G,B)
     dmax=1.0,              # normalized distance range

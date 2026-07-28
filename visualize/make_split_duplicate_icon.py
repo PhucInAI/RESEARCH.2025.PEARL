@@ -3,15 +3,20 @@
 # (A) Split: one Gaussian -> k smaller Gaussians along principal axis
 # (B) Duplicate: one Gaussian -> two overlapping copies (slight offset)
 #
-# Output: split_duplicate_icon.png
+# Output: assets/figures/split_duplicate_icon.png
+
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, FancyArrowPatch
 
+FIGURES_DIR = Path(__file__).resolve().parents[1] / "assets" / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def make_split_duplicate_icon(
-    out_path="split_duplicate_icon.png",
+    out_path=FIGURES_DIR / "split_duplicate_icon.png",
     k_children=3,
     seed=0,
 ):
@@ -110,4 +115,4 @@ def make_split_duplicate_icon(
 
 
 if __name__ == "__main__":
-    make_split_duplicate_icon(out_path="split_duplicate_icon.png", k_children=3)
+    make_split_duplicate_icon(out_path=FIGURES_DIR / "split_duplicate_icon.png", k_children=3)

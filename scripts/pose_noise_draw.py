@@ -3,8 +3,12 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RESULTS_DIR = REPO_ROOT / "assets" / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
 # ---- load ----
-data = json.loads(Path("pose_noise_report.json").read_text())
+data = json.loads((RESULTS_DIR / "pose_noise_report.json").read_text())
 df = pd.DataFrame(data["results"]).sort_values(["rot_sigma_deg", "trans_sigma"])
 
 # ---- CVPR-ish matplotlib settings (no explicit colors) ----
@@ -57,6 +61,6 @@ def plot_metric(metric_mean, metric_std, ylabel, outbase):
     fig.savefig(f"{outbase}.png", bbox_inches="tight")
     plt.close(fig)
 
-plot_metric("psnr_mean",  "psnr_std",  "PSNR (dB)", "pose_noise_psnr")
-plot_metric("ssim_mean",  "ssim_std",  "SSIM",      "pose_noise_ssim")
-plot_metric("lpips_mean", "lpips_std", "LPIPS",     "pose_noise_lpips")
+plot_metric("psnr_mean",  "psnr_std",  "PSNR (dB)", RESULTS_DIR / "pose_noise_psnr")
+plot_metric("ssim_mean",  "ssim_std",  "SSIM",      RESULTS_DIR / "pose_noise_ssim")
+plot_metric("lpips_mean", "lpips_std", "LPIPS",     RESULTS_DIR / "pose_noise_lpips")

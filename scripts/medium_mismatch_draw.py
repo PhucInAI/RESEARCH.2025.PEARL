@@ -4,8 +4,12 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RESULTS_DIR = REPO_ROOT / "assets" / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
 # --- load ---
-data = json.loads(Path("medium_mismatch_report.json").read_text())
+data = json.loads((RESULTS_DIR / "medium_mismatch_report.json").read_text())
 df = pd.DataFrame(data["results"]).sort_values("attn_scale")
 
 # --- CVPR-ish matplotlib settings (no explicit colors) ---
@@ -41,9 +45,9 @@ def save_line_with_err(y_mean, y_std, ylabel, outbase, lower_is_better=False):
     plt.close(fig)
 
 # PSNR / SSIM / LPIPS
-save_line_with_err(df["psnr_mean"],  df["psnr_std"],  "PSNR (dB)", "medium_mismatch_psnr")
-save_line_with_err(df["ssim_mean"],  df["ssim_std"],  "SSIM",      "medium_mismatch_ssim")
-save_line_with_err(df["lpips_mean"], df["lpips_std"], "LPIPS",     "medium_mismatch_lpips", lower_is_better=True)
+save_line_with_err(df["psnr_mean"],  df["psnr_std"],  "PSNR (dB)", RESULTS_DIR / "medium_mismatch_psnr")
+save_line_with_err(df["ssim_mean"],  df["ssim_std"],  "SSIM",      RESULTS_DIR / "medium_mismatch_ssim")
+save_line_with_err(df["lpips_mean"], df["lpips_std"], "LPIPS",     RESULTS_DIR / "medium_mismatch_lpips", lower_is_better=True)
 
 # Corr(depth, abs error)
 fig = plt.figure(figsize=(3.3, 2.4), dpi=300)
@@ -56,8 +60,8 @@ ax.set_ylabel(r"Corr(depth, abs error)")
 ax.set_xticks(sorted(x.tolist()))
 ax.grid(True, linestyle=":", linewidth=0.6)
 fig.tight_layout(pad=0.2)
-fig.savefig("medium_mismatch_depthcorr.pdf", bbox_inches="tight")
-fig.savefig("medium_mismatch_depthcorr.png", bbox_inches="tight")
+fig.savefig(RESULTS_DIR / "medium_mismatch_depthcorr.pdf", bbox_inches="tight")
+fig.savefig(RESULTS_DIR / "medium_mismatch_depthcorr.png", bbox_inches="tight")
 plt.close(fig)
 
 # Depth-binned PSNR proxy (5 depth quantile bins)
@@ -78,6 +82,6 @@ ax.set_xticks(sorted(x.tolist()))
 ax.grid(True, linestyle=":", linewidth=0.6)
 ax.legend(frameon=False, ncol=2, handlelength=1.6, columnspacing=0.8)
 fig.tight_layout(pad=0.2)
-fig.savefig("medium_mismatch_depthbins.pdf", bbox_inches="tight")
-fig.savefig("medium_mismatch_depthbins.png", bbox_inches="tight")
+fig.savefig(RESULTS_DIR / "medium_mismatch_depthbins.pdf", bbox_inches="tight")
+fig.savefig(RESULTS_DIR / "medium_mismatch_depthbins.png", bbox_inches="tight")
 plt.close(fig)

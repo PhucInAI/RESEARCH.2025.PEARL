@@ -9,6 +9,9 @@ import torch
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.cameras.cameras import Cameras
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RESULTS_DIR = REPO_ROOT / "assets" / "results"
+
 
 def _skew(w: torch.Tensor) -> torch.Tensor:
     wx, wy, wz = w[..., 0], w[..., 1], w[..., 2]
@@ -135,7 +138,7 @@ def main():
     ap.add_argument("--rot-sigmas-deg", type=str, default="0,0.25,0.5,1,2,5")
     ap.add_argument("--trans-sigmas", type=str, default="0,0.0025,0.005,0.01,0.02")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", type=Path, default=Path("pose_noise_report.json"))
+    ap.add_argument("--out", type=Path, default=RESULTS_DIR / "pose_noise_report.json")
     args = ap.parse_args()
 
     _, pipeline, _, _ = eval_setup(args.load_config, eval_num_rays_per_chunk=None, test_mode="test")

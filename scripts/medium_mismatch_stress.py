@@ -10,6 +10,9 @@ import torch.nn.functional as F
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.cameras.cameras import Cameras
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RESULTS_DIR = REPO_ROOT / "assets" / "results"
+
 
 def inv_softplus(y: torch.Tensor) -> torch.Tensor:
     # inverse of softplus for y>0, stable piecewise
@@ -184,7 +187,7 @@ def main():
     ap.add_argument("--attn-scales", type=str, default="0.5,0.75,1,1.25,1.5,2.0")
     ap.add_argument("--bs-scales", type=str, default="1.0")   # keep one-by-one unless you want a grid
     ap.add_argument("--rgb-scales", type=str, default="1.0")  # keep one-by-one unless you want a grid
-    ap.add_argument("--out", type=Path, default=Path("medium_mismatch_report.json"))
+    ap.add_argument("--out", type=Path, default=RESULTS_DIR / "medium_mismatch_report.json")
     args = ap.parse_args()
 
     _, pipeline, _, _ = eval_setup(args.load_config, eval_num_rays_per_chunk=None, test_mode="test")

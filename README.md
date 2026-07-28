@@ -1,141 +1,152 @@
 <p align="center">
-    <h1>
-        <span class="title-main"><span>WaterSplatting</span></span>
-        <span class="title-small">Fast Underwater 3D Scene Reconstruction Using Gaussian Splatting</span>
-      </h1>
+    <h1 align="center">PEARL<br/><sub>Photometric-Error and Attenuation-Regularized Learning for Underwater 3D Gaussian Splatting</sub></h1>
   <p align="center">
-    <a href="https://github.com/IronLu11">Huapeng Li</a>
+    Thanh-Phuc Nguyen
     ·
-    <a href="https://www.linkedin.com/in/wenxuan-song-901123188/">Wenxuan Song</a>
+    Hoang-Dieu Vu
     ·
-    <a href="https://www.linkedin.com/in/tianao-xu-066b51258/">Tianao Xu</a>
+    Nhat-Minh Hoang
     ·
-    <a href="https://www.linkedin.com/in/alexandre-elsig-516642116/">Alexandre Elsig</a>
+    Kien Do
     ·
-    <a href="https://jkulhanek.com/">Jonas Kulhanek</a>
-  </p><p align="center">
-    <b><i>3DV 2025</i></b>
+    Huy-Hieu Pham
   </p>
-  <h3 align="center"><a href="https://arxiv.org/pdf/2408.08206">📄 Paper</a> | <a href="https://water-splatting.github.io/">🌐 Project Page</a></h3>
-  <div align="center"></div>
+  <p align="center">
+    Phenikaa University · FPT Smart Cloud · VinUni-Illinois Smart Health Center · GREEN-X, VinUniversity
+  </p>
+  <p align="center">
+    <b><i>Paper under review</i></b>
+  </p>
 </p>
-<br/>
 <p align="center">
-  <img alt="WaterSplatting Reconstruction" src=".assets/curasao.webp" />
+  <img alt="PEARL reconstruction of the Curacao SeaThru-NeRF scene" src=".assets/pearl_teaser.jpg" />
 </p>
-    <p align="center" class="justify" style="font-size: 1rem;margin: 0 0 0.4rem 0; text-align-last: center">
-    <strong>WaterSplatting</strong> combines 3DGS with volume rendering to enable water/fog modeling</strong>
-    </p>
+
 <p align="justify">
-We introduce WaterSplatting, a novel approach that fuses volumetric rendering with 3DGS to handle underwater data effectively. 
-Our method employs 3DGS for explicit geometry representation and a separate volumetric field (queried once per pixel) for capturing the scattering medium. 
-This dual representation further allows the restoration of the scenes by removing the scattering medium. 
-Our method outperforms state-of-the-art NeRF-based methods in rendering quality on the underwater SeaThru-NeRF dataset. 
-Furthermore, it does so while offering real-time rendering performance.
+<strong>PEARL</strong> is a medium-aware training framework for underwater 3D Gaussian Splatting, built on top of
+<a href="https://github.com/water-splatting/water-splatting">WaterSplatting</a> and
+<a href="https://docs.nerf.studio/">nerfstudio</a>. Underwater imagery breaks two assumptions of standard 3DGS
+training: photometric error is dominated by wavelength-dependent attenuation and backscatter rather than geometry,
+and the usual densification heuristics misallocate the Gaussian budget to regions the medium — not the scene —
+fails to explain. PEARL addresses both with two principles:
 </p>
-<br>
+
+- **Principle A — Budgeted residual-driven capacity allocation.** Per-Gaussian photometric error is accumulated by
+  residual attribution (an EMA over compositing-weight-normalized residuals) and combined with screen-space activity
+  into a densification score. Splitting (along the principal axis), duplication, and pruning all operate under a hard
+  budget `N_max`, with complexity-based seeding at initialization.
+- **Principle B — Medium-consistent supervision.** Relative L1/SSIM reconstruction losses, edge-aware reweighting,
+  a view-conditioned medium MLP (backscatter color, backscatter density, attenuation), depth-dependent Beer-Lambert
+  attenuation, and attenuation regularization (magnitude, smoothness, R≥G≥B ordering).
+
+Both principles are independent toggles (`enable_error_densification`, `enable_budget_aware_split`,
+`enable_complexity_init`, `enable_edge_loss`, `enable_depth_attenuation`) for ablations.
 
 ## Installation
 
-Our method is based on [nerfstudio](https://docs.nerf.studio/index.html).
+Tested with Python 3.12, PyTorch 2.6.0 + CUDA 12.4, and nerfstudio 1.1.4 on Ubuntu 24.04 (RTX 3090).
 
-### Create environment
 ```bash
-conda create --name water_splatting -y python=3.8
-conda activate water_splatting
+# Environment
+conda create --name pearl -y python=3.12
+conda activate pearl
 python -m pip install --upgrade pip
-```
 
-### Install WaterSplatting
+# PyTorch
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 
-```bash
-# Install PyTorch
-pip uninstall torch torchvision functorch tinycudann
-pip install torch==2.1.2+cu118 torchvision==0.16.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+# tiny-cuda-nn (needs a CUDA toolkit matching your driver)
+pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch --no-build-isolation
 
-# Install cuda-toolkit with conda
-conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
-
-# Install tiny-cuda-nn
-pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
-
-# Install nerfstudio
+# nerfstudio
 pip install nerfstudio==1.1.4
 ns-install-cli
 
-# WaterSplatting
-git clone git@github.com:water-splatting/water-splatting.git
-cd water-splatting
-git submodule init
-git submodule update --recursive
-pip install --no-use-pep517 -e .
+# PEARL (the glm submodule is required to build the CUDA rasterizer)
+git clone --recursive <repository-url>
+cd PEARL
+pip install -e . --no-build-isolation
 ```
 
 ## Data Preprocessing
-To keep consistency across different models, we recomputed the camera intrinsic/extrinsic parameters and performed distortion corrections using [COLMAP](https://github.com/colmap/colmap)'s `image_undistorter` on [SeaThru-NeRF](https://sea-thru-nerf.github.io/) dataset:
+
+We follow WaterSplatting and recompute camera parameters with distortion correction using
+[COLMAP](https://github.com/colmap/colmap)'s `image_undistorter` on the
+[SeaThru-NeRF](https://sea-thru-nerf.github.io/) dataset:
+
 ```bash
 colmap image_undistorter \
-  --image_path /your_path_to_dataset/SeathruNeRF_dataset/IUI3-RedSea/images_wb \
-  --input_path /your_path_to_dataset/SeathruNeRF_dataset/IUI3-RedSea/colmap/sparse/0 \
-  --output_path /your_path_to_dataset/undistorted_seathrunerf_dataset/IUI3-RedSea \
+  --image_path data/SeathruNeRF_dataset/IUI3-RedSea/images_wb \
+  --input_path data/SeathruNeRF_dataset/IUI3-RedSea/colmap/sparse/0 \
+  --output_path data/undistorted_seathrunerf_dataset/IUI3-RedSea \
   --output_type COLMAP
 ```
 
 ## Training
-To start the training on the undistorted SeaThru-NeRF dataset, run the following commands:
+
 ```bash
-cd /your_path_to_repo/water-splatting
-ns-train water-splatting --vis viewer+wandb colmap --downscale-factor 1 --colmap-path sparse --data /your_path_to_dataset/undistorted_seathrunerf_dataset/IUI3-RedSea --images-path images
+ns-train pearl --vis viewer+wandb colmap --downscale-factor 1 --colmap-path sparse \
+  --data data/undistorted_seathrunerf_dataset/IUI3-RedSea --images-path images
 ```
 
-Or, to start the training on the original [SeaThru-NeRF](https://sea-thru-nerf.github.io/) dataset, run the following commands:
-```bash
-cd /your_path_to_repo/water-splatting
-ns-train water-splatting --vis viewer+wandb colmap --downscale-factor 1 --colmap-path sparse/0 --data /your_path_to_dataset/SeathruNeRF_dataset/IUI3-RedSea --images-path Images_wb
-```
-Please note that: The training and testing splits reported in our paper are different from the default splits in nerfstudio, and are consistent with the splits used in the SeaThru-NeRF paper.
+Useful flags:
+
+- `--pipeline.model.max-gaussians` — hard budget `N_max` (default 1,000,000).
+- `--pipeline.model.enable-error-densification False` etc. — ablate individual PEARL components.
+- `ns-train pearl-big ...` — variant without post-densification culling.
+
+The train/test splits follow the SeaThru-NeRF protocol, not the nerfstudio defaults.
 
 ## Evaluation
 
 ```bash
-cd /your_path_to_repo/water-splatting
-ns-eval --load-config outputs/unnamed/water-splatting/your_timestamp/config.yml --render-output-path renders/eval
+ns-eval --load-config outputs/unnamed/pearl/<timestamp>/config.yml --render-output-path renders/eval
 ```
 
-## Interactive viewer
-To start the viewer and explore the trained models, run one of the following:
+To sweep every saved checkpoint of a run and report the best one per metric:
+
 ```bash
-ns-viewer --load-config outputs/unnamed/water-splatting/your_timestamp/config.yml
+python scripts/eval_all_ckpts.py outputs/unnamed/pearl/<timestamp>
 ```
 
-## Rendering videos
-To render a video on a trajectory (e.g., generated from the interactive viewer), run:
+Robustness studies from the paper (pose-noise sensitivity, medium-mismatch stress, Gaussian-budget ablation) live in
+`scripts/`; camera-path generation and offline rendering utilities live in `tools/`.
+
+## Interactive Viewer
+
 ```bash
-ns-render camera-path --load-config outputs/unnamed/water-splatting/your_timestamp/config.yml --camera-path-filename /your_path_to_dataset/SeathruNeRF_dataset/IUI3-RedSea/camera_paths/your_trajectory.json --output-path renders/IUI3-RedSea/water_splatting.mp4
+ns-viewer --load-config outputs/unnamed/pearl/<timestamp>/config.yml
 ```
 
-Please note that the default output quality is lossy.
+## Rendering Videos
 
-## Rendering dataset
-To render testing set for a checkpoint, run:
 ```bash
-ns-render dataset --load-config outputs/unnamed/water-splatting/your_timestamp/config.yml --data /your_path_to_dataset/SeathruNeRF_dataset/IUI3-RedSea
+ns-render camera-path --load-config outputs/unnamed/pearl/<timestamp>/config.yml \
+  --camera-path-filename <camera_path.json> --output-path renders/IUI3-RedSea/pearl.mp4
 ```
-Please note that the default output quality is lossy.
-</p>
-</section>
-
-## Acknowledgements
-This work was supported by the Czech Science Foundation (GACR) EXPRO (grant no. 23-07973X), and by the Ministry of Education, Youth and Sports of the Czech Republic through the e-INFRA CZ (ID:90254).
-Jonas Kulhanek acknowledges travel support from the European Union’s Horizon 2020 research and innovation programme under ELISE (grant no. 951847).
 
 ## Citation
-If you find our code or paper useful, please cite:
+
+The paper is under review; a citation entry will be added upon publication.
+
 ```bibtex
-@article{li2025watersplatting,
-  title={{W}ater{S}platting: Fast Underwater {3D} Scene Reconstruction using Gaussian Splatting},
-  author={Li, Huapeng and Song, Wenxuan and Xu, Tianao and Elsig, Alexandre and Kulhanek, Jonas},
-  journal={3DV},
-  year={2025}
+@article{nguyen2026pearl,
+  title={{PEARL}: Photometric-Error and Attenuation-Regularized Learning for Underwater {3D} Gaussian Splatting},
+  author={Nguyen, Thanh-Phuc and Vu, Hoang-Dieu and Hoang, Nhat-Minh and Do, Kien and Pham, Huy-Hieu},
+  year={2026},
+  note={Under review}
 }
 ```
+
+## Acknowledgements
+
+This codebase is built upon [WaterSplatting](https://github.com/water-splatting/water-splatting)
+(Li et al., 3DV 2025), which combines 3DGS with volume rendering for underwater scenes, and inherits its
+gsplat-derived CUDA rasterizer. We thank the authors for releasing their code under Apache-2.0.
+We also thank the authors of [SeaThru-NeRF](https://sea-thru-nerf.github.io/) for the dataset.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE). Original WaterSplatting code
+Copyright 2024 Huapeng Li, Wenxuan Song, Tianao Xu, Alexandre Elsig and Jonas Kulhanek;
+PEARL modifications Copyright 2026 Thanh-Phuc Nguyen et al.

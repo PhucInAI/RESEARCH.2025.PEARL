@@ -1,0 +1,49 @@
+[build-system]
+# Setuptools build backend (recommended for Nerfstudio plugins and C++/CUDA extensions).
+requires = ["setuptools>=61.0", "wheel", "torch"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pearl"
+version = "0.0.1"
+description = "PEARL: Photometric-Error and Attenuation-Regularized Learning for underwater 3D Gaussian Splatting"
+
+# Runtime deps. (Dev tools moved to optional-dependencies.)
+dependencies = [
+    "nerfstudio>=0.3.4",
+    "torch",
+    "jaxtyping",
+    "rich>=12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pyright",
+    "ruff",
+    "black",
+    "sphinx",
+    "sphinx_rtd_theme",
+    "sphinxcontrib-bibtex",
+    "sphinxcontrib-video",
+]
+
+[tool.setuptools.packages.find]
+include = ["pearl*"]
+
+[tool.pyright]
+include = ["pearl"]
+exclude = ["**/__pycache__"]
+reportMissingImports = false
+reportMissingTypeStubs = false
+reportPrivateImportUsage = false
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+
+[tool.ruff]
+select = ["E","F","PLC","PLE","PLR","PLW"]
+ignore = ["E501","F722","F821","PLR2004","PLR0913"]
+
+[project.entry-points.'nerfstudio.method_configs']
+pearl = "pearl.pearl_config:pearl_method"
+pearl_big = "pearl.pearl_config:pearl_method_big"

@@ -1,11 +1,11 @@
-from pathlib import Path
-
 import numpy as np
 import matplotlib.pyplot as plt
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RESULTS_DIR = REPO_ROOT / "assets" / "results"
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+from pearl.run_paths import paper_dir
+
+# Cross-run sweep: the values below come from seven separate runs, so these
+# figures belong in the flat paper/ dir rather than any single run's folder.
+PAPER_DIR = paper_dir()
 
 # --- data (Curacao, SeaThru-NeRF) ---
 budgets = np.array([10_000, 20_000, 50_000, 100_000, 200_000, 1_000_000, 10_000_000], dtype=float)
@@ -53,6 +53,6 @@ def plot_curve(y, ylabel, out_pdf, lower_is_better=False):
     fig.savefig(out_pdf.with_suffix(".png"), bbox_inches="tight")
     plt.close(fig)
 
-plot_curve(psnr,  "PSNR (dB)", RESULTS_DIR / "ablation_budget_psnr.pdf")
-plot_curve(ssim,  "SSIM",      RESULTS_DIR / "ablation_budget_ssim.pdf")
-plot_curve(lpips, "LPIPS",     RESULTS_DIR / "ablation_budget_lpips.pdf", lower_is_better=True)
+plot_curve(psnr,  "PSNR (dB)", PAPER_DIR / "ablation_budget_psnr.pdf")
+plot_curve(ssim,  "SSIM",      PAPER_DIR / "ablation_budget_ssim.pdf")
+plot_curve(lpips, "LPIPS",     PAPER_DIR / "ablation_budget_lpips.pdf", lower_is_better=True)

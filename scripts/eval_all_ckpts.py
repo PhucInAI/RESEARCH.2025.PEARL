@@ -8,6 +8,7 @@ from statistics import fmean
 from math import inf
 
 from pearl.ai_logger import aiLogger
+from pearl.run_paths import run_artifact_dir
 
 STEP_RE = re.compile(r"step-(\d+)\.ckpt$")
 
@@ -124,8 +125,7 @@ def main():
     )
     assert ckpts, f"No step-*.ckpt found in {models_dir}"
 
-    eval_root = run_dir / "eval_all_ckpts"
-    eval_root.mkdir(exist_ok=True)
+    eval_root = run_artifact_dir(cfg_path, "ckpt_sweep")
 
     base_text = cfg_path.read_text()
 

@@ -100,18 +100,32 @@ The train/test splits follow the SeaThru-NeRF protocol, not the nerfstudio defau
 
 ## Evaluation
 
+Everything derived from a checkpoint is written under `assets/results/<scene>/<timestamp>/`,
+where `<scene>` and `<timestamp>` are read out of the run's `config.yml`. Our own scripts
+resolve that destination themselves; only `ns-eval` needs to be told:
+
 ```bash
-ns-eval --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml --render-output-path assets/renders/eval
+ns-eval --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml \
+  --output-path        assets/results/<scene>/<timestamp>/eval/metrics.json \
+  --render-output-path assets/results/<scene>/<timestamp>/eval
 ```
 
 To sweep every saved checkpoint of a run and report the best one per metric:
 
 ```bash
-python scripts/eval_all_ckpts.py assets/outputs/unnamed/pearl/<timestamp>
+python scripts/eval_all_ckpts.py --run-dir assets/outputs/unnamed/pearl/<timestamp>
+# -> assets/results/<scene>/<timestamp>/ckpt_sweep/
 ```
 
 Robustness studies from the paper (pose-noise sensitivity, medium-mismatch stress, Gaussian-budget ablation) live in
-`scripts/`; camera-path generation and offline rendering utilities live in `tools/`.
+`scripts/`; camera-path generation and offline rendering utilities live in `tools/`. The
+per-run studies take `--load-config` and write into that run's `analysis/` folder; the
+cross-run budget ablation lands in `assets/results/paper/`.
+
+```bash
+python scripts/pose_noise_sensitivity.py --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml
+python scripts/pose_noise_draw.py        --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml
+```
 
 ## Interactive Viewer
 
@@ -123,7 +137,16 @@ ns-viewer --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml
 
 ```bash
 ns-render camera-path --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml \
-  --camera-path-filename <camera_path.json> --output-path assets/renders/IUI3-RedSea/pearl.mp4
+  --camera-path-filename <camera_path.json> \
+  --output-path assets/results/<scene>/<timestamp>/renders/pearl.mp4
+```
+
+The offline renderers in `tools/` pick that destination up automatically — drop
+`--output-path` and they write into the run's own `renders/` folder:
+
+```bash
+python tools/render_seathru_camera_paths.py \
+  --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml --camera-path virtual
 ```
 
 ## Citation

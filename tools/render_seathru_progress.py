@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from pearl.ai_logger import aiLogger
+from pearl.run_paths import parse_dataset_path_from_config, run_artifact_dir
 
 from generate_seathru_camera_paths import (
     colmap_image_to_camera_to_world,
@@ -34,7 +35,6 @@ from render_seathru_camera_paths import (
     load_camera_path,
     load_checkpoint_gaussians,
     load_training_image_library,
-    parse_dataset_path_from_config,
     project_gaussians,
     render_custom_frame,
     render_dense_gaussian_frame,
@@ -77,8 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-path",
         type=Path,
-        required=True,
-        help="Path to the sparse-to-dense progress video output.",
+        help="Sparse-to-dense progress video output. Defaults to progress.mp4 in the run's "
+             "renders dir under assets/results/.",
     )
     parser.add_argument(
         "--fps",
@@ -430,6 +430,7 @@ def main() -> None:
     camera_path = resolve_camera_path(args.camera_path, args.load_config)
     if not camera_path.is_file():
         raise SystemExit(f"Camera path file does not exist: {camera_path}")
+    output_path = args.output_path or run_artifact_dir(args.load_config, "renders") / "progress.mp4"
 
     sparse_cloud = load_sparse_gaussian_cloud(args.load_config, device=device)
     dense_cloud = load_checkpoint_gaussians(checkpoint_path, device=device)
@@ -443,9 +444,9 @@ def main() -> None:
         "Rendering sparse-to-dense progress video "
         f"with {sparse_cloud.means.shape[0]} sparse points and {dense_cloud.means.shape[0]} dense gaussians"
     )
-    aiLogger.info(f"Camera path: {camera_path} -> {args.output_path}")
+    aiLogger.info(f"Camera path: {camera_path} -> {output_path}")
     if args.generate_images:
-        aiLogger.info(f"Image companion output: {derive_image_output_path(args.output_path)}")
+        aiLogger.info(f"Image companion output: {derive_image_output_path(output_path)}")
     if args.fps is not None:
         aiLogger.info(f"Output FPS override: {args.fps}")
 
@@ -455,7 +456,7 @@ def main() -> None:
             full_dense_cloud=dense_cloud,
             load_config_path=args.load_config,
             camera_path_data=camera_path_data,
-            output_path=args.output_path,
+            output_path=output_path,
             output_fps=args.fps,
             generate_images=args.generate_images,
         )

@@ -11,9 +11,9 @@ from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.cameras.cameras import Cameras
 
 from pearl.ai_logger import aiLogger
+from pearl.run_paths import run_artifact_dir
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RESULTS_DIR = REPO_ROOT / "assets" / "results"
+REPORT_NAME = "medium_mismatch_report.json"
 
 
 def inv_softplus(y: torch.Tensor) -> torch.Tensor:
@@ -189,8 +189,11 @@ def main():
     ap.add_argument("--attn-scales", type=str, default="0.5,0.75,1,1.25,1.5,2.0")
     ap.add_argument("--bs-scales", type=str, default="1.0")   # keep one-by-one unless you want a grid
     ap.add_argument("--rgb-scales", type=str, default="1.0")  # keep one-by-one unless you want a grid
-    ap.add_argument("--out", type=Path, default=RESULTS_DIR / "medium_mismatch_report.json")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="Defaults to the run's analysis dir under assets/results/.")
     args = ap.parse_args()
+
+    out_path = args.out or run_artifact_dir(args.load_config, "analysis") / REPORT_NAME
 
     _, pipeline, _, _ = eval_setup(args.load_config, eval_num_rays_per_chunk=None, test_mode="test")
 
@@ -217,16 +220,16 @@ def main():
             "depth_bin_psnr": "PSNR proxy computed from MSE accumulated in 5 depth quantile bins (0-20,20-40,...,80-100%).",
         },
     }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(payload, indent=2))
-    aiLogger.info(f"Saved: {args.out}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2))
+    aiLogger.info(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":
     main()
 
 
-# python medium_mismatch_stress.py \
-#   --load-config /path/to/outputs/.../config.yml \
-#   --attn-scales 0.5,0.75,1,1.25,1.5,2.0 \
-#   --out medium_mismatch_report.json
+# python scripts/medium_mismatch_stress.py \
+#   --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml \
+#   --attn-scales 0.5,0.75,1,1.25,1.5,2.0
+# -> assets/results/<scene>/<timestamp>/analysis/medium_mismatch_report.json

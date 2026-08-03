@@ -51,6 +51,7 @@ Tested with Python 3.12, PyTorch 2.6.0 + CUDA 12.4, and nerfstudio 1.1.4 on Ubun
 conda create --name pearl -y python=3.12
 conda activate pearl
 python -m pip install --upgrade pip
+pip install "setuptools<82.0.0"
 
 # PyTorch
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
@@ -115,7 +116,27 @@ To sweep every saved checkpoint of a run and report the best one per metric:
 ```bash
 python scripts/eval_all_ckpts.py --run-dir assets/outputs/unnamed/pearl/<timestamp>
 # -> assets/results/<scene>/<timestamp>/ckpt_sweep/
+#  + assets/results/<scene>/<timestamp>/best/   (winner as best.ckpt + config + metrics)
 ```
+
+The sweep exports its winner — the PSNR-maximising checkpoint, which is the protocol
+the paper reports — to `best/` under step-free names. nerfstudio finds checkpoints only
+by their `step-%09d.ckpt` filename, so PEARL ships three thin wrappers that resolve
+`best.ckpt` and otherwise pass every flag straight through to nerfstudio:
+
+| PEARL command | equivalent to |
+|---|---|
+| `pearl-eval` | `ns-eval` |
+| `pearl-viewer` | `ns-viewer` |
+| `pearl-render` | `ns-render` |
+
+```bash
+pearl-eval --load-config assets/results/<scene>/<timestamp>/best/config.yml \
+  --output-path assets/results/<scene>/<timestamp>/eval/best_metrics.json
+```
+
+Given any other config they behave exactly like the `ns-*` command they wrap, so they
+are safe to use everywhere.
 
 Robustness studies from the paper (pose-noise sensitivity, medium-mismatch stress, Gaussian-budget ablation) live in
 `scripts/`; camera-path generation and offline rendering utilities live in `tools/`. The
@@ -130,13 +151,16 @@ python scripts/pose_noise_draw.py        --load-config assets/outputs/unnamed/pe
 ## Interactive Viewer
 
 ```bash
-ns-viewer --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml
+pearl-viewer --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml
+pearl-viewer --load-config assets/results/<scene>/<timestamp>/best/config.yml   # the sweep winner
 ```
 
 ## Rendering Videos
 
+Needs `ffmpeg` on `PATH` (`conda install -c conda-forge ffmpeg`).
+
 ```bash
-ns-render camera-path --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml \
+pearl-render camera-path --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml \
   --camera-path-filename <camera_path.json> \
   --output-path assets/results/<scene>/<timestamp>/renders/pearl.mp4
 ```

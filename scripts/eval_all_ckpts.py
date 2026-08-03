@@ -2,22 +2,17 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from statistics import fmean
 from math import inf
 
 from pearl.ai_logger import aiLogger
-from pearl.run_paths import run_artifact_dir
+from pearl.run_paths import absolutize_config_text, run_artifact_dir
 
 STEP_RE = re.compile(r"step-(\d+)\.ckpt$")
-
-def posixpath_block(p: Path, indent: str = "") -> str:
-    parts = p.resolve().parts
-    lines = [f"{indent}load_dir: !!python/object/apply:pathlib.PosixPath"]
-    for part in parts:
-        lines.append(f"{indent}- {part}")
-    return "\n".join(lines) + "\n"
+CKPT_STEP_RE = re.compile(r"step-\d+\.ckpt")
 
 def replace_scalar_line(text: str, key: str, value: str) -> str:
     pat = re.compile(rf"(?m)^(?P<indent>\s*){re.escape(key)}:\s*.*$")
@@ -30,27 +25,6 @@ def replace_scalar_line(text: str, key: str, value: str) -> str:
         return f"{key}: {value}\n"
     lines.insert(1, f"{key}: {value}\n")
     return "".join(lines)
-
-def replace_block_load_dir(text: str, models_dir: Path) -> str:
-    lines = text.splitlines(True)
-    out = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        m = re.match(r"^(\s*)load_dir:\s*(.*)\s*$", line)
-        if not m:
-            out.append(line)
-            i += 1
-            continue
-        indent = m.group(1)
-        i += 1
-        while i < len(lines) and re.match(rf"^{re.escape(indent)}-\s+", lines[i]):
-            i += 1
-        out.append(posixpath_block(models_dir, indent=indent))
-        return "".join(out) + "".join(lines[i:])
-    head = lines[0] if lines else ""
-    rest = "".join(lines[1:]) if len(lines) > 1 else ""
-    return head + posixpath_block(models_dir, indent="") + rest
 
 def _numeric_list(x):
     return isinstance(x, list) and x and all(isinstance(v, (int, float)) for v in x)
@@ -104,30 +78,60 @@ def extract_metric(data, name: str):
 
     return walk(data)
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--run-dir", type=Path, required=True)
-    ap.add_argument("--metric", choices=["psnr", "ssim", "psnr+ssim"], default="psnr")
-    ap.add_argument("--device", default=None)
-    ap.add_argument("--debug-first", action="store_true",
-                    help="Print top-level keys of the first metrics.json for inspection.")
-    args = ap.parse_args()
+def scrub_step_text(text: str) -> str:
+    """Null the checkpoint-resume keys so a copied config names no step."""
+    # Unlike replace_scalar_line, never insert a key that the config lacks.
+    for key in ("load_step", "load_checkpoint"):
+        pat = re.compile(rf"(?m)^(?P<indent>\s*){re.escape(key)}:\s*.*$")
+        text = pat.sub(lambda m: f"{m.group('indent')}{key}: null", text)
+    return text
 
-    run_dir = args.run_dir
-    cfg_path = run_dir / "config.yml"
-    models_dir = run_dir / "nerfstudio_models"
-    assert cfg_path.exists(), f"Missing {cfg_path}"
-    assert models_dir.exists(), f"Missing {models_dir}"
+def scrub_step_json(obj):
+    """Strip every step reference from a metrics report, keeping all values."""
+    if isinstance(obj, dict):
+        return {k: scrub_step_json(v) for k, v in obj.items() if str(k).lower() != "step"}
+    if isinstance(obj, list):
+        return [scrub_step_json(v) for v in obj]
+    if isinstance(obj, str) and CKPT_STEP_RE.search(obj):
+        return "best.ckpt"
+    return obj
 
+def export_best(run_dir: Path, cfg_path: Path, eval_root: Path, best: dict) -> Path:
+    """Copy the winning checkpoint, its config and its metrics into best/, step-free."""
+    best_dir = run_artifact_dir(cfg_path, "best")
+
+    # Byte copy by choice: the .ckpt still records its step internally (top-level
+    # "step", Adam step counters, scheduler last_epoch). Scrubbing those would mean
+    # re-saving, so best.ckpt stays identical to the source and only the surrounding
+    # filenames and text artifacts are step-free.
+    src_ckpt = run_dir / "nerfstudio_models" / best["ckpt"]
+    assert src_ckpt.exists(), f"Missing {src_ckpt}"
+    shutil.copy2(src_ckpt, best_dir / "best.ckpt")
+
+    # Absolutised so best/config.yml loads from any cwd; pearl-viewer / pearl-render /
+    # pearl-eval then find best.ckpt as its sibling (ADR-009).
+    config_text = absolutize_config_text(scrub_step_text(cfg_path.read_text()))
+    (best_dir / "config.yml").write_text(config_text)
+
+    src_metrics = eval_root / f"step_{best['step']:09d}" / "metrics.json"
+    assert src_metrics.exists(), f"Missing {src_metrics}"
+    metrics = scrub_step_json(json.loads(src_metrics.read_text()))
+    (best_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+
+    aiLogger.info(f"best checkpoint exported to {best_dir}")
+    return best_dir
+
+def run_sweep(args, cfg_path: Path, models_dir: Path, eval_root: Path) -> list:
+    """Run ns-eval over every step-*.ckpt of the run and collect its metrics."""
     ckpts = sorted(
         [p for p in models_dir.glob("step-*.ckpt") if STEP_RE.search(p.name)],
         key=lambda p: int(STEP_RE.search(p.name).group(1)),
     )
     assert ckpts, f"No step-*.ckpt found in {models_dir}"
 
-    eval_root = run_artifact_dir(cfg_path, "ckpt_sweep")
-
-    base_text = cfg_path.read_text()
+    # ns-eval rebuilds load_dir from output_dir on every load, so absolutising the
+    # config is what points the sweep at models_dir — writing load_dir never did.
+    base_text = absolutize_config_text(cfg_path.read_text())
 
     env = os.environ.copy()
     if args.device is not None:
@@ -139,10 +143,8 @@ def main():
         step_dir = eval_root / f"step_{step:09d}"
         step_dir.mkdir(exist_ok=True)
 
-        text = base_text
-        text = replace_scalar_line(text, "load_checkpoint", "null")
+        text = replace_scalar_line(base_text, "load_checkpoint", "null")
         text = replace_scalar_line(text, "load_step", str(step))
-        text = replace_block_load_dir(text, models_dir)
 
         tmp_cfg = step_dir / "config_eval.yml"
         tmp_cfg.write_text(text)
@@ -162,6 +164,27 @@ def main():
 
         results.append({"step": step, "ckpt": ckpt.name, "psnr": psnr, "ssim": ssim, "lpips": lpips})
 
+    return results
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--run-dir", type=Path, required=True)
+    ap.add_argument("--metric", choices=["psnr", "ssim", "psnr+ssim"], default="psnr")
+    ap.add_argument("--device", default=None)
+    ap.add_argument("--debug-first", action="store_true",
+                    help="Print top-level keys of the first metrics.json for inspection.")
+    ap.add_argument("--copy-best-only", action="store_true",
+                    help="Skip ns-eval; rebuild best/ from an existing ckpt_sweep/all_results.json.")
+    args = ap.parse_args()
+
+    run_dir = args.run_dir
+    cfg_path = run_dir / "config.yml"
+    models_dir = run_dir / "nerfstudio_models"
+    assert cfg_path.exists(), f"Missing {cfg_path}"
+    assert models_dir.exists(), f"Missing {models_dir}"
+
+    eval_root = run_artifact_dir(cfg_path, "ckpt_sweep")
+
     def score(r):
         # Missing metrics get -inf so they never win; avoids NoneType crash.
         p = r["psnr"] if isinstance(r["psnr"], (int, float)) else -inf
@@ -172,16 +195,30 @@ def main():
             return s
         return p + 100.0 * s
 
+    if args.metric != "psnr":
+        aiLogger.warning(
+            f"--metric {args.metric}: best/ will not follow the published protocol, "
+            "which reports the PSNR-maximising checkpoint (paper Table 3)."
+        )
+
+    if args.copy_best_only:
+        all_results = eval_root / "all_results.json"
+        assert all_results.exists(), f"Missing {all_results}; run the sweep first."
+        results = json.loads(all_results.read_text())
+    else:
+        results = run_sweep(args, cfg_path, models_dir, eval_root)
+        (eval_root / "all_results.json").write_text(json.dumps(results, indent=2))
+
     # If *all* scores are -inf, metrics were not found at all.
     best = max(results, key=score)
     if score(best) == -inf:
         aiLogger.error("Could not find metrics in any metrics.json. Use --debug-first to inspect keys.")
-        (eval_root / "all_results.json").write_text(json.dumps(results, indent=2))
         return
 
-    (eval_root / "all_results.json").write_text(json.dumps(results, indent=2))
-    (eval_root / f"BEST_{args.metric}.json").write_text(json.dumps(best, indent=2))
+    if not args.copy_best_only:
+        (eval_root / f"BEST_{args.metric}.json").write_text(json.dumps(best, indent=2))
     aiLogger.info(f"BEST: {best}")
+    export_best(run_dir, cfg_path, eval_root, best)
 
 if __name__ == "__main__":
     main()

@@ -9,7 +9,7 @@ from statistics import fmean
 from math import inf
 
 from pearl.ai_logger import aiLogger
-from pearl.run_paths import absolutize_config_text, run_artifact_dir
+from pearl.run_paths import run_artifact_dir
 
 STEP_RE = re.compile(r"step-(\d+)\.ckpt$")
 CKPT_STEP_RE = re.compile(r"step-\d+\.ckpt")
@@ -108,10 +108,10 @@ def export_best(run_dir: Path, cfg_path: Path, eval_root: Path, best: dict) -> P
     assert src_ckpt.exists(), f"Missing {src_ckpt}"
     shutil.copy2(src_ckpt, best_dir / "best.ckpt")
 
-    # Absolutised so best/config.yml loads from any cwd; pearl-viewer / pearl-render /
-    # pearl-eval then find best.ckpt as its sibling (ADR-009).
-    config_text = absolutize_config_text(scrub_step_text(cfg_path.read_text()))
-    (best_dir / "config.yml").write_text(config_text)
+    # Copied as text: its paths are already anchored on the project root and are
+    # re-resolved on load (ADR-010), so best/config.yml works from any cwd and
+    # pearl-viewer / pearl-render / pearl-eval find best.ckpt as its sibling (ADR-009).
+    (best_dir / "config.yml").write_text(scrub_step_text(cfg_path.read_text()))
 
     src_metrics = eval_root / f"step_{best['step']:09d}" / "metrics.json"
     assert src_metrics.exists(), f"Missing {src_metrics}"
@@ -129,9 +129,10 @@ def run_sweep(args, cfg_path: Path, models_dir: Path, eval_root: Path) -> list:
     )
     assert ckpts, f"No step-*.ckpt found in {models_dir}"
 
-    # ns-eval rebuilds load_dir from output_dir on every load, so absolutising the
-    # config is what points the sweep at models_dir — writing load_dir never did.
-    base_text = absolutize_config_text(cfg_path.read_text())
+    # ns-eval rebuilds load_dir from output_dir on every load, so the config's
+    # root-anchored output_dir is what points the sweep at models_dir — writing
+    # load_dir never did.
+    base_text = cfg_path.read_text()
 
     env = os.environ.copy()
     if args.device is not None:
@@ -150,19 +151,34 @@ def run_sweep(args, cfg_path: Path, models_dir: Path, eval_root: Path) -> list:
         tmp_cfg.write_text(text)
 
         out_json = step_dir / "metrics.json"
-        cmd = ["ns-eval", "--load-config", str(tmp_cfg), "--output-path", str(out_json)]
-        aiLogger.info(" ".join(cmd))
-        subprocess.run(cmd, check=True, env=env)
-
-        data = json.loads(out_json.read_text())
+        # Resume support: a step whose metrics.json already parses is not re-evaluated.
+        data = None
+        if out_json.exists():
+            try:
+                data = json.loads(out_json.read_text())
+                aiLogger.info(f"reusing existing {out_json}")
+            except json.JSONDecodeError:
+                data = None
+        if data is None:
+            # pearl-eval, not ns-eval: stock ns-eval dies on torch 2.6 weights_only (KI-007)
+            cmd = ["pearl-eval", "--load-config", str(tmp_cfg), "--output-path", str(out_json)]
+            aiLogger.info(" ".join(cmd))
+            subprocess.run(cmd, check=True, env=env)
+            data = json.loads(out_json.read_text())
         if args.debug_first and idx == 0:
             aiLogger.debug(f"top-level keys: {list(data.keys())[:50]}")
 
         psnr = extract_metric(data, "psnr")
         ssim = extract_metric(data, "ssim")
         lpips = extract_metric(data, "lpips")
+        fps = extract_metric(data, "fps")
+        gaussian_count = extract_metric(data, "gaussian_count")
 
-        results.append({"step": step, "ckpt": ckpt.name, "psnr": psnr, "ssim": ssim, "lpips": lpips})
+        results.append({
+            "step": step, "ckpt": ckpt.name,
+            "psnr": psnr, "ssim": ssim, "lpips": lpips,
+            "fps": fps, "gaussian_count": gaussian_count,
+        })
 
     return results
 

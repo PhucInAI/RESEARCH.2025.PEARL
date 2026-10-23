@@ -158,7 +158,9 @@ def _construct_tuple(loader: yaml.Loader, node: yaml.Node) -> tuple:
 # eval_utils.eval_setup calls yaml.load(..., Loader=yaml.Loader) and cannot be told
 # otherwise. Purely additive — these are new tags, so every config already on disk
 # keeps loading, and `!!python/object:` stays the fallback for anything a
-# representer above does not cover.
+# representer above does not cover. The `!` multi-constructor claims that whole tag
+# prefix process-wide, but an exact-tag constructor still wins over it, so only
+# another library's own `!`-prefix *multi*-constructor could be shadowed.
 def register_yaml_handlers() -> None:
     """Teach the stock PyYAML loaders every tag PearlDumper writes."""
     for loader in (yaml.Loader, yaml.FullLoader, yaml.UnsafeLoader):

@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PEARL · Underwater Gaussian Splatting</title>
+<meta name="description" content="PEARL: Photometric-Error and Attenuation-Regularized Learning for Underwater 3D Gaussian Splatting. Budgeted, error-driven densification and medium-consistent supervision for real-time underwater novel view synthesis.">
+<meta property="og:title" content="PEARL: Underwater 3D Gaussian Splatting">
+<meta property="og:description" content="Budgeted, error-driven capacity allocation and Beer–Lambert supervision for underwater 3DGS.">
+<meta property="og:image" content="static/images/teaser.jpg">
+<meta name="theme-color" content="#021526">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CradialGradient id='g' cx='.35' cy='.3' r='.8'%3E%3Cstop offset='0' stop-color='%23ffffff'/%3E%3Cstop offset='.45' stop-color='%23e9dcf3'/%3E%3Cstop offset='.75' stop-color='%23b9dcea'/%3E%3Cstop offset='1' stop-color='%236f8fb0'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='28' fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,400;0,500;0,600;1,400&family=Unbounded:wght@300;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<a class="skip" href="#water">Skip to content</a>
+
+<!-- Fixed depth gauge: transmittance of R, G, B at the current scroll "depth" -->
+<aside class="gauge" aria-hidden="true">
+  <span class="gauge-depth"><b id="gauge-m">0</b> m</span>
+  <span class="gauge-bar r"><i></i></span>
+  <span class="gauge-bar g"><i></i></span>
+  <span class="gauge-bar b"><i></i></span>
+</aside>
+
+<header class="hero">
+  <video class="hero-video" src="static/videos/panama.mp4" autoplay muted loop playsinline preload="auto" aria-hidden="true"></video>
+  <div class="hero-veil"></div>
+
+  <div class="masthead wrap">
+    <a class="brand" href="https://vinuni.edu.vn/" aria-label="VinUniversity, Smart Green Transformation Center">
+      <img src="static/images/vinuni-greenx-logo.png" alt="VinUniversity, Smart Green Transformation Center" width="1200" height="180">
+    </a>
+    <nav aria-label="Page sections">
+      <a href="#water">Medium</a>
+      <a href="#method">Method</a>
+      <a href="#results">Results</a>
+      <a href="#cite">Cite</a>
+    </nav>
+  </div>
+
+  <div class="hero-body wrap">
+    <h1 class="wordmark" aria-label="PEARL">PEARL</h1>
+    <p class="title">Photometric-Error and Attenuation-Regularized Learning for Underwater 3D Gaussian Splatting</p>
+
+    <ul class="authors">
+      <li>Thanh-Phuc Nguyen<sup>4*</sup></li>
+      <li>Hoang-Dieu Vu<sup>1*</sup></li>
+      <li>Nhat-Minh Hoang<sup>1</sup></li>
+      <li>Kien Do<sup>2</sup></li>
+      <li>Huy-Hieu Pham<sup>3,4†</sup></li>
+    </ul>
+    <ul class="affils">
+      <li><sup>1</sup>Phenikaa University</li>
+      <li><sup>2</sup>FPT Smart Cloud, FPT Corporation</li>
+      <li><sup>3</sup>VinUni-Illinois Smart Health Center, VinUniversity</li>
+      <li><sup>4</sup>GREEN-X, VinUniversity</li>
+    </ul>
+    <p class="notes"><sup>*</sup>Equal contribution <span class="sep"></span> <sup>†</sup>Corresponding author</p>
+
+    <div class="actions">
+      <a class="btn btn-pearl is-soon" aria-disabled="true" title="Available after publication">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h9l5 5v15H6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 2v6h6" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+        Paper <small>soon</small>
+      </a>
+      <a class="btn is-soon" aria-disabled="true" title="Code is released upon acceptance">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg>
+        Code <small>on acceptance</small>
+      </a>
+      <a class="btn" href="#results">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+        Watch renders
+      </a>
+    </div>
+  </div>
+
+  <p class="hero-caption wrap">Novel-view render of the Panama reef by PEARL.</p>
+</header>
+
+<main>
+
+  <!-- ===== The problem: water bends the photometric assumptions ===== -->
+  <section class="intro wrap" aria-labelledby="intro-h">
+    <h2 id="intro-h" class="lede">Water eats red light first, veils the distance in blue, and quietly convinces 3D&nbsp;Gaussian Splatting to fill the sea with floaters.</h2>
+    <div class="intro-cols">
+      <p>Underwater, the colour a camera records depends on how far the light travelled. Absorption and backscatter change with range, wavelength and viewing direction, so the same coral looks different from every view. Standard 3DGS treats those changes as geometry: it spends primitives on empty water and under-reconstructs the thin branches that matter.</p>
+      <p>PEARL is a medium-aware training framework that fixes both sides of the problem. It decides <em>where</em> Gaussians go by following the error that is left after the water is modelled, under a hard cap on how many may exist. And it decides <em>what</em> they learn by tying appearance to the Beer–Lambert physics of light in water.</p>
+    </div>
+  </section>
+
+  <!-- ===== Interactive medium simulator (signature moment) ===== -->
+  <section id="water" class="water" aria-labelledby="water-h">
+    <div class="wrap">
+      <h2 id="water-h" class="h2">Add the water, or take it away</h2>
+      <p class="sub">Drag through the image formation model PEARL renders with. Each colour channel decays as <span class="m" data-tex="e^{-\beta_c d}"></span>, and lost light is replaced by a veil of backscatter. Left of centre inverts the model to pull the water out of a real SeaThru-NeRF frame.</p>
+
+      <div class="sim">
+        <figure class="sim-stage">
+          <canvas id="sim-canvas" width="960" height="635" role="img" aria-label="Underwater reef photograph re-rendered with more or less water"></canvas>
+          <figcaption id="sim-readout" aria-live="polite">The original photograph</figcaption>
+        </figure>
+
+        <div class="sim-panel">
+          <label class="sim-label" for="sim-slider">Water between camera and reef</label>
+          <input id="sim-slider" type="range" min="-100" max="100" value="0" step="1">
+          <div class="sim-ends"><span>Less water</span><span>Photo</span><span>More water</span></div>
+
+          <svg id="sim-chart" viewBox="0 0 320 190" role="img" aria-label="Transmittance of red, green and blue light against distance">
+            <g class="axis">
+              <line x1="34" y1="16" x2="34" y2="160"/>
+              <line x1="34" y1="160" x2="310" y2="160"/>
+              <text x="28" y="20" text-anchor="end">1</text>
+              <text x="28" y="163" text-anchor="end">0</text>
+              <text x="310" y="180" text-anchor="end">10 m</text>
+              <text x="34" y="180">0</text>
+              <text x="172" y="180" text-anchor="middle">5</text>
+            </g>
+            <path class="curve r" id="curve-r"/>
+            <path class="curve g" id="curve-g"/>
+            <path class="curve b" id="curve-b"/>
+            <line id="chart-mark" class="mark" y1="16" y2="160"/>
+            <circle id="dot-r" class="dot r" r="4"/>
+            <circle id="dot-g" class="dot g" r="4"/>
+            <circle id="dot-b" class="dot b" r="4"/>
+          </svg>
+          <ul class="legend">
+            <li class="r">red light kept</li>
+            <li class="g">green</li>
+            <li class="b">blue</li>
+          </ul>
+          <p class="sim-note">PEARL learns <span class="m" data-tex="\beta(\mathbf v)"></span>, the backscatter and the medium colour per viewing direction with a small network, and keeps them physical with an ordering prior <span class="m" data-tex="\beta_R \ge \beta_G \ge \beta_B"></span>. This demo uses fixed coefficients and a pseudo-depth for illustration.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Method ===== -->
+  <section id="method" class="method wrap" aria-labelledby="method-h">
+    <h2 id="method-h" class="h2">Two principles, one training loop</h2>
+
+    <div class="principles">
+      <article class="principle">
+        <span class="tag">Principle A</span>
+        <h3>Spend Gaussians where the error lives</h3>
+        <p>Every pixel's residual is attributed back to the Gaussians that drew it, by their compositing responsibility, and smoothed over time. Primitives that are both used and persistently wrong score highest. Splits and clones are taken in score order until the budget is full; the least useful primitives are pruned to make room.</p>
+        <div class="eq" data-tex="h_i = g_i\left(1+\lambda_E\,\frac{\bar E_i}{\bar E_{\text{mean}}+\epsilon}\right)\qquad \text{s.t. } N \le N_{\max}"></div>
+        <ul class="points">
+          <li>Gradient activity reweighted by a responsibility-weighted residual EMA</li>
+          <li>Hard primitive cap enforced at every refinement round</li>
+          <li>Principal-axis splitting and complexity-guided seeding</li>
+        </ul>
+      </article>
+
+      <article class="principle">
+        <span class="tag">Principle B</span>
+        <h3>Supervise with the physics of water</h3>
+        <p>Each Gaussian's colour is attenuated by its own distance along the ray, then a backscatter veil is added up to the rendered depth. Training compares that medium-aware render to the photo with a relative L1 and SSIM loss, weights coral edges more, and keeps the learned attenuation smooth and red-first.</p>
+        <div class="eq" data-tex="\hat{\mathbf c}=\sum_k w_k\,\mathbf c_{i_k}\odot e^{-\boldsymbol\beta d_{i_k}} + \boldsymbol\sigma_{\text{bs}}\odot\mathbf c_{\text{med}}\odot\frac{1-e^{-\boldsymbol\beta \hat d}}{\boldsymbol\beta}"></div>
+        <ul class="points">
+          <li>View-conditioned medium network for colour, backscatter and attenuation</li>
+          <li>Sobel edge weighting for thin structures</li>
+          <li>Beer–Lambert regulariser: magnitude, smoothness, R ≥ G ≥ B</li>
+        </ul>
+      </article>
+    </div>
+
+    <figure class="arch">
+      <img src="static/images/architecture.jpg" alt="PEARL architecture: posed images and SfM points initialise a 3D Gaussian scene; the rasterizer output is combined with attenuation and backscatter from a medium network; photometric, edge and medium losses update both, while a budgeted densification controller refines the Gaussians." loading="lazy" width="2000" height="598">
+      <figcaption>PEARL jointly optimises the Gaussians and a view-conditioned medium network. The budgeted controller (pink) refines the scene from residual error; the dashed region is the medium-consistent supervision.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== Results ===== -->
+  <section id="results" class="results" aria-labelledby="results-h">
+    <div class="wrap">
+      <h2 id="results-h" class="h2">Four reefs, rendered from new viewpoints</h2>
+
+      <div class="player">
+        <div class="tabs" role="tablist" aria-label="SeaThru-NeRF scenes">
+          <button role="tab" aria-selected="true"  data-src="static/videos/panama.mp4">Panama</button>
+          <button role="tab" aria-selected="false" data-src="static/videos/curasao.mp4">Curaçao</button>
+          <button role="tab" aria-selected="false" data-src="static/videos/iui3.mp4">IUI3, Red Sea</button>
+          <button role="tab" aria-selected="false" data-src="static/videos/japanesegradens.mp4">Japanese Gardens, Red Sea</button>
+        </div>
+        <div class="screen">
+          <video id="scene-video" src="static/videos/panama.mp4" muted loop playsinline controls preload="metadata"></video>
+        </div>
+      </div>
+
+      <p class="claim">Over its 3DGS backbone, PEARL gains <strong>+3.61&nbsp;dB</strong> PSNR and cuts LPIPS by <strong>25%</strong>, with the best SSIM and LPIPS on all four SeaThru-NeRF scenes, under a hard budget of one million Gaussians.</p>
+
+      <figure class="compare">
+        <img src="static/images/curasao.jpg" alt="Three held-out views of the Curaçao reef comparing ground truth, SeaThru-NeRF, WaterSplatting and PEARL, each with a depth map and a zoomed crop." loading="lazy" width="2200" height="1623">
+        <figcaption>Held-out views on Curaçao. Left to right: ground truth, SeaThru-NeRF, WaterSplatting, PEARL. Under each: rendered depth and the boxed crop. PEARL keeps thin coral intact, leaves the open water clean, and holds colour stable into the distance.</figcaption>
+      </figure>
+
+      <div class="findings">
+        <div>
+          <h3>Capacity is the lever</h3>
+          <p>On Curaçao, raising the budget from 10K to 1M Gaussians moves quality far more than swapping the densification heuristic does. Uncapped training on IUI3 grew past 35M primitives and exhausted an 80&nbsp;GB GPU. PEARL treats the cap as a hard constraint and spends it well.</p>
+        </div>
+        <div>
+          <h3>Memory fixed in advance</h3>
+          <p>Because the count is bounded, so is rendering memory, and it is known before training starts. On Curaçao, PEARL renders in less memory than WaterSplatting at comparable capacity.</p>
+        </div>
+        <div>
+          <h3>Not only underwater</h3>
+          <p>On sparse-view LLFF <em>Fern</em>, where supervision is limited by view count rather than by water, the same recipe reaches the highest SSIM among the compared methods.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Citation ===== -->
+  <section id="cite" class="cite wrap" aria-labelledby="cite-h">
+    <h2 id="cite-h" class="h2">Cite PEARL</h2>
+    <div class="bib">
+      <button class="copy" type="button" data-copy="bibtex">Copy BibTeX</button>
+<pre id="bibtex"><code>@article{nguyen2026pearl,
+  title   = {PEARL: Photometric-Error and Attenuation-Regularized
+             Learning for Underwater 3D Gaussian Splatting},
+  author  = {Nguyen, Thanh-Phuc and Vu, Hoang-Dieu and Hoang, Nhat-Minh
+             and Do, Kien and Pham, Huy-Hieu},
+  journal = {Under review},
+  year    = {2026}
+}</code></pre>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <a class="brand brand-foot" href="https://vinuni.edu.vn/" aria-label="VinUniversity, Smart Green Transformation Center">
+      <img src="static/images/vinuni-greenx-logo.png" alt="VinUniversity, Smart Green Transformation Center" width="1200" height="180" loading="lazy">
+    </a>
+    <p>PEARL builds on <a href="https://github.com/water-splatting/water-splatting">WaterSplatting</a> and <a href="https://docs.nerf.studio/">nerfstudio</a>. Scenes from the <a href="https://sea-thru-nerf.github.io/">SeaThru-NeRF</a> dataset. Contact: <a href="mailto:hieu.ph@vinuni.edu.vn">hieu.ph@vinuni.edu.vn</a></p>
+  </div>
+</footer>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="static/site.js"></script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 from typing import Any
 import torch
 
+from .config_yaml import register_yaml_handlers
 from .project_gaussians import project_gaussians
 from .rasterize import rasterize_gaussians
 from ._torch_impl import project_gaussians_forward, rasterize_gaussians_forward
@@ -15,6 +16,16 @@ from .utils import (
 from .sh import spherical_harmonics
 from .version import __version__
 import warnings
+
+
+# ========================================================================
+# Config format
+# ========================================================================
+# nerfstudio reads a saved run through yaml.load(..., Loader=yaml.Loader), which it
+# does not let us parameterise, so the PEARL tags are taught to the stock loaders at
+# package import. Plugin discovery imports this package before any config is read,
+# which makes every ns-* and pearl-* entrypoint able to load the new format.
+register_yaml_handlers()
 
 
 __all__ = [

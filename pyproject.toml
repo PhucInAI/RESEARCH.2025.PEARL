@@ -47,3 +47,9 @@ ignore = ["E501","F722","F821","PLR2004","PLR0913"]
 [project.entry-points.'nerfstudio.method_configs']
 pearl = "pearl.pearl_config:pearl_method"
 pearl_big = "pearl.pearl_config:pearl_method_big"
+
+# ns-viewer / ns-render / ns-eval, taught to load assets/results/*/*/best/ exports.
+[project.scripts]
+pearl-viewer = "pearl.ns_cli:viewer_entrypoint"
+pearl-render = "pearl.ns_cli:render_entrypoint"
+pearl-eval = "pearl.ns_cli:eval_entrypoint"

@@ -4,6 +4,7 @@
 Notes:
 - The main output at ``--output-path`` is the sharper, more point-cloud-like render.
   It keeps only the last gaussian hit per pixel shell, so it looks crisper and sparser.
+  Omit ``--output-path`` to land it in ``assets/results/<scene>/<timestamp>/renders/``.
 - A sibling dense-gaussian video is also written next to it.
   That version accumulates many gaussian hits per pixel, so it looks fuller, softer,
   and more 3DGS-like.
@@ -27,6 +28,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 from pearl.ai_logger import aiLogger
+from pearl.run_paths import parse_dataset_path_from_config, run_artifact_dir
 
 BACKGROUND_COLOR = np.array([6, 10, 14], dtype=np.uint8)
 MAX_GAUSSIAN_RADIUS = 6
@@ -75,8 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-path",
         type=Path,
-        required=True,
-        help="Path to the primary custom render output. A sibling dense-gaussian video is also written.",
+        help="Primary custom render output. Defaults to the run's renders dir under assets/results/. "
+             "A sibling dense-gaussian video is also written.",
     )
     parser.add_argument(
         "--fps",
@@ -90,21 +92,6 @@ def parse_args() -> argparse.Namespace:
         help="Also write a companion video from the nearest real dataset images along the camera path.",
     )
     return parser.parse_args()
-
-
-def parse_dataset_path_from_config(config_path: Path) -> Path | None:
-    lines = config_path.read_text(encoding="utf-8").splitlines()
-    for index, line in enumerate(lines):
-        if line.strip() != "data: !!python/object/apply:pathlib.PosixPath":
-            continue
-        parts = []
-        cursor = index + 1
-        while cursor < len(lines) and lines[cursor].startswith("      - "):
-            parts.append(lines[cursor].split("- ", 1)[1])
-            cursor += 1
-        if parts:
-            return Path(*parts)
-    return None
 
 
 def resolve_camera_path(camera_path_arg: str, load_config_path: Path) -> Path:
@@ -625,6 +612,9 @@ def main() -> None:
     camera_path = resolve_camera_path(args.camera_path, args.load_config)
     if not camera_path.is_file():
         raise SystemExit(f"Camera path file does not exist: {camera_path}")
+    output_path = args.output_path or (
+        run_artifact_dir(args.load_config, "renders") / f"{camera_path.stem}.mp4"
+    )
 
     gaussian_cloud = load_checkpoint_gaussians(checkpoint_path, device=device)
     camera_path_data = load_camera_path(camera_path)
@@ -633,11 +623,11 @@ def main() -> None:
     if device.type == "cuda":
         aiLogger.info(f"CUDA GPU: {torch.cuda.get_device_name(device)}")
     aiLogger.info(f"Rendering dense-gaussian video from {checkpoint_path.name} with {gaussian_cloud.means.shape[0]} gaussians")
-    dense_output_path = derive_dense_output_path(args.output_path)
-    aiLogger.info(f"Camera path: {camera_path} -> {args.output_path}")
+    dense_output_path = derive_dense_output_path(output_path)
+    aiLogger.info(f"Camera path: {camera_path} -> {output_path}")
     aiLogger.info(f"Dense-gaussian companion output: {dense_output_path}")
     if args.generate_images:
-        aiLogger.info(f"Image companion output: {derive_image_output_path(args.output_path)}")
+        aiLogger.info(f"Image companion output: {derive_image_output_path(output_path)}")
     if args.fps is not None:
         aiLogger.info(f"Output FPS override: {args.fps}")
     with torch.inference_mode():
@@ -645,7 +635,7 @@ def main() -> None:
             gaussian_cloud,
             args.load_config,
             camera_path_data,
-            args.output_path,
+            output_path,
             output_fps=args.fps,
             generate_images=args.generate_images,
         )

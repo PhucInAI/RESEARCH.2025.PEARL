@@ -10,9 +10,9 @@ from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.cameras.cameras import Cameras
 
 from pearl.ai_logger import aiLogger
+from pearl.run_paths import run_artifact_dir
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RESULTS_DIR = REPO_ROOT / "assets" / "results"
+REPORT_NAME = "pose_noise_report.json"
 
 
 def _skew(w: torch.Tensor) -> torch.Tensor:
@@ -140,8 +140,11 @@ def main():
     ap.add_argument("--rot-sigmas-deg", type=str, default="0,0.25,0.5,1,2,5")
     ap.add_argument("--trans-sigmas", type=str, default="0,0.0025,0.005,0.01,0.02")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", type=Path, default=RESULTS_DIR / "pose_noise_report.json")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="Defaults to the run's analysis dir under assets/results/.")
     args = ap.parse_args()
+
+    out_path = args.out or run_artifact_dir(args.load_config, "analysis") / REPORT_NAME
 
     _, pipeline, _, _ = eval_setup(args.load_config, eval_num_rays_per_chunk=None, test_mode="test")
 
@@ -163,16 +166,16 @@ def main():
         "trans_sigmas": trans_list,
         "results": results,
     }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(payload, indent=2))
-    aiLogger.info(f"Saved: {args.out}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2))
+    aiLogger.info(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":
     main()
 
-# python pose_noise_sensitivity.py \
-#   --load-config /path/to/outputs/.../config.yml \
+# python scripts/pose_noise_sensitivity.py \
+#   --load-config assets/outputs/unnamed/pearl/<timestamp>/config.yml \
 #   --rot-sigmas-deg 0,0.5,1,2,5 \
-#   --trans-sigmas 0,0.005,0.01,0.02 \
-#   --out pose_noise_report.json
+#   --trans-sigmas 0,0.005,0.01,0.02
+# -> assets/results/<scene>/<timestamp>/analysis/pose_noise_report.json

@@ -1,6 +1,8 @@
 """Nerfstudio method specifications for PEARL"""
 
 
+from dataclasses import dataclass
+
 from nerfstudio.engine.trainer import TrainerConfig
 from nerfstudio.plugins.types import MethodSpecification
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
@@ -9,16 +11,37 @@ from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataPars
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from nerfstudio.engine.optimizers import AdamOptimizerConfig
 from nerfstudio.configs.base_config import ViewerConfig
+from pearl.ai_logger import aiLogger
+from pearl.config_yaml import anchor_locations, dump_config_text
 from pearl.pearl import PearlModelConfig
 
-NUM_STEPS = 30000
+# Published-protocol schedule (the four 1M main runs trained 20000 steps with
+# scheduler max_steps 20000; paper Table 2's T=10K is a typo — KI-004).
+NUM_STEPS = 20000
+
+
+# ========================================================================
+# Trainer: nerfstudio's, saving a readable config.yml
+# ========================================================================
+@dataclass
+class PearlTrainerConfig(TrainerConfig):
+    """TrainerConfig whose saved config.yml carries short tags and repo-relative paths."""
+
+    def save_config(self) -> None:
+        """Save config to base directory, in the PEARL config.yml format."""
+        base_dir = self.get_base_dir()
+        base_dir.mkdir(parents=True, exist_ok=True)
+        anchor_locations(self)
+        config_yaml_path = base_dir / "config.yml"
+        config_yaml_path.write_text(dump_config_text(self), "utf8")
+        aiLogger.info(f"saved config to {config_yaml_path}")
 
 
 # ========================================================================
 # Base method: ns-train pearl
 # ========================================================================
 pearl_method = MethodSpecification(
-    config=TrainerConfig(
+    config=PearlTrainerConfig(
         method_name="pearl",
         steps_per_eval_image=1000,
         steps_per_eval_batch=0,
@@ -108,7 +131,7 @@ pearl_method = MethodSpecification(
 # Big variant: ns-train pearl-big
 # ========================================================================
 pearl_method_big = MethodSpecification(
-    config=TrainerConfig(
+    config=PearlTrainerConfig(
         method_name="pearl-big",
         steps_per_eval_image=100,
         steps_per_eval_batch=0,
